@@ -10,7 +10,16 @@ from decisionlib import CONFIG, SHARED
 
 
 def main(task_for):
-    with decisionlib.make_repo_bundle():
+    decisionlib.Task.with_repo_bundle = lambda s, *args, **kwargs: s.with_repo(*args, *kwargs)
+    commits = [
+        "dcdf910a259005bbdd993089d12f9f7eca9a26db",
+        "e8d6ed09c466473e376fe434e3012675467f4c39",
+    ]
+    # with decisionlib.make_repo_bundle():
+    for CONFIG.git_sha in commits:
+        CONFIG.task_name_template = "Servo {}: %s".format(CONFIG.git_sha)
+        if hasattr(CONFIG, "_task_id"):
+            del CONFIG._task_id
         tasks(task_for)
 
 
@@ -675,7 +684,7 @@ def macos_wpt():
 
 
 def linux_wpt():
-    linux_wpt_common(total_chunks=4, layout_2020=False)
+    linux_wpt_common(total_chunks=10, layout_2020=False)
 
 
 def linux_wpt_layout_2020():
@@ -787,12 +796,13 @@ def wpt_chunks(platform, make_chunk_task, build_task, total_chunks, processes,
             for word in script.split()
             if word.endswith(".log")
         ])
-        task.find_or_create("%s_%swpt_%s.%s" % (
-            platform.replace(" ", "_").lower(),
-            job_id_prefix.replace("-", "_"),
-            this_chunk,
-            CONFIG.task_id(),
-        ))
+        task.create()
+#        task.find_or_create("%s_%swpt_%s.%s" % (
+#            platform.replace(" ", "_").lower(),
+#            job_id_prefix.replace("-", "_"),
+#            this_chunk,
+#            CONFIG.task_id(),
+#        ))
 
 
 def daily_tasks_setup():

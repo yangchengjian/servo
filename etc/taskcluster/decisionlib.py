@@ -252,6 +252,8 @@ class Task:
         }
         scopes = self.scopes + CONFIG.scopes_for_all_subtasks
         routes = self.routes + CONFIG.routes_for_all_subtasks
+        import pprint
+        pprint.pprint(routes)
         if any(r.startswith("index.") for r in routes):
             self.extra.setdefault("index", {})["expires"] = \
                 SHARED.from_now_json(self.index_and_artifacts_expire_in)
