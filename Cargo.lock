@@ -2744,12 +2744,15 @@ dependencies = [
  "cssparser",
  "embedder_traits",
  "euclid",
+ "fnv",
  "gfx",
  "gfx_traits",
  "ipc-channel",
  "libc",
  "msg",
  "net_traits",
+ "once_cell",
+ "parking_lot",
  "range",
  "rayon",
  "rayon_croissant",
@@ -2758,6 +2761,7 @@ dependencies = [
  "serde",
  "servo_arc",
  "servo_geometry",
+ "servo_url",
  "style",
  "style_traits",
  "unicode-script",
@@ -2834,6 +2838,7 @@ dependencies = [
  "metrics",
  "msg",
  "net_traits",
+ "parking_lot",
  "profile_traits",
  "range",
  "script",
@@ -3704,6 +3709,12 @@ checksum = "e4730aa1c64d722db45f7ccc4113a3e2c465d018de6db4d3e7dfe031e8c8a297"
 dependencies = [
  "objc",
 ]
+
+[[package]]
+name = "once_cell"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "891f486f630e5c5a4916c7e16c4b24a53e78c860b646e9f8e005e4f16847bfed"
 
 [[package]]
 name = "opaque-debug"
