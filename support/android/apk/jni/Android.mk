@@ -26,3 +26,9 @@ LOCAL_PATH:= $(SERVO_TARGET_DIR)/../../gstreamer/gst-build-$(APP_ABI)
 LOCAL_MODULE := gstreamer
 LOCAL_SRC_FILES := libgstreamer_android.so
 include $(PREBUILT_SHARED_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_PATH:= $(SERVO_TARGET_DIR)/../../../../ports/arcore_jni/jni/$(APP_ABI)
+LOCAL_MODULE := arcore_sdk_c
+LOCAL_SRC_FILES := libarcore_sdk_c.so
+include $(PREBUILT_SHARED_LIBRARY)

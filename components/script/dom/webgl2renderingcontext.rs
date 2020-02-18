@@ -3096,6 +3096,33 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
             return
         )
     }
+
+
+    fn DrawBackground(&self) {
+        self.base.DrawBackground();
+    }
+
+//    fn ProjectViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
+//        self.base.ProjectViewMatrix(location);
+//    }
+//
+//    fn ProjectMatrix(&self, location: Option<&WebGLUniformLocation>) {
+//        self.base.ProjectMatrix(location);
+//    }
+//
+//    fn ViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
+//        self.base.ViewMatrix(location);
+//    }
+
+    #[allow(unsafe_code)]
+    fn GetProjectMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+        self.base.GetProjectMatrix(cx)
+    }
+
+    #[allow(unsafe_code)]
+    fn GetViewMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+        self.base.GetViewMatrix(cx)
+    }
 }
 
 impl LayoutCanvasWebGLRenderingContextHelpers for LayoutDom<WebGL2RenderingContext> {

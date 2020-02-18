@@ -17,6 +17,7 @@ use canvas_traits::webgl::ProgramLinkInfo;
 use canvas_traits::webgl::SwapChainId;
 use canvas_traits::webgl::TexDataType;
 use canvas_traits::webgl::TexFormat;
+use canvas_traits::webgl::WebARCommand;
 use canvas_traits::webgl::WebGLBufferId;
 use canvas_traits::webgl::WebGLChan;
 use canvas_traits::webgl::WebGLCommand;
@@ -65,7 +66,7 @@ use surfman::platform::generic::universal::connection::Connection;
 use surfman::platform::generic::universal::context::Context;
 use surfman::platform::generic::universal::device::Device;
 use surfman::ContextAttributeFlags;
-use surfman::ContextAttributes;
+use surfman::CreateContext;
 use surfman::GLVersion;
 use surfman::SurfaceAccess;
 use surfman::SurfaceInfo;
@@ -277,13 +278,14 @@ impl WebGLThread {
                             id,
                             &self.contexts,
                             &mut self.bound_context_id,
-                        )
-                        .expect("WebGLContext not found");
+                        ).expect("WebGLContext not found");
                         let glsl_version = Self::get_glsl_version(&*data.gl);
                         let api_type = match data.gl.get_type() {
                             gl::GlType::Gl => GlType::Gl,
                             gl::GlType::Gles => GlType::Gles,
                         };
+
+//                        self.handle_webar_command(id, WebARCommand::OnDisplayChanged(0, 1080, 1920));
 
                         // FIXME(nox): Should probably be done by surfman.
                         if api_type != GlType::Gles {
@@ -313,34 +315,141 @@ impl WebGLThread {
                         }
                     }))
                     .unwrap();
-            },
+            }
             WebGLMsg::ResizeContext(ctx_id, size, sender) => {
                 self.resize_webgl_context(ctx_id, size, sender);
-            },
+            }
             WebGLMsg::RemoveContext(ctx_id) => {
                 self.remove_webgl_context(ctx_id);
-            },
+            }
             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
+                match &command {
+                    WebGLCommand::DrawBackground => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::DrawBackground");
+                        self.handle_webar_command(ctx_id, WebARCommand::OnDraw);
+                    }
+                    WebGLCommand::GetProjectMatrix(result_sender) => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetProjectMatrix");
+
+                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                        let mut vector = Vec::with_capacity(16);
+                        vector.extend_from_slice(&arcore.proj_mat4x4);
+                        result_sender.send(vector);
+                    }
+                    WebGLCommand::GetViewMatrix(result_sender) => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetViewMatrix");
+
+                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                        let mut vector = Vec::with_capacity(16);
+                        vector.extend_from_slice(&arcore.view_mat4x4);
+                        result_sender.send(vector);
+                    }
+//                    WebGLCommand::ProjectViewMatrix(location) => {
+//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ProjectViewMatrix");
+//
+//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
+//                        let arcore = &info.arcore;
+////                        let location = arcore.uniform_mvp_mat_;
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectViewMatrix  location = {}", location));
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectViewMatrix  mvp = {:?}", &arcore.pv));
+//                        if location == -1 {
+//                            ()
+//                        } else {
+//                            let data = Self::make_current_if_needed(
+//                                &self.device,
+//                                ctx_id,
+//                                &self.contexts,
+//                                &mut self.bound_context_id,
+//                            ).expect("WebGLContext not found");
+//                            data.gl.uniform_matrix_4fv(location, false, &arcore.pv);
+//                        };
+//                    }
+//                    WebGLCommand::ProjectMatrix(*location) => {
+//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ProjectMatrix");
+//
+//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
+//                        let arcore = &info.arcore;
+//
+////                        let location = &*arcore.uniform_mvp_mat_ as i32;
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectMatrix  location = {}", location));
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectMatrix  mvp = {:?}", &arcore.proj_mat4x4));
+//                        if location == -1 {
+//                            ()
+//                        } else {
+//                            let data = Self::make_current_if_needed(
+//                                &self.device,
+//                                ctx_id,
+//                                &self.contexts,
+//                                &mut self.bound_context_id,
+//                            ).expect("WebGLContext not found");
+//                            data.gl.uniform_matrix_4fv(location, false, &arcore.proj_mat4x4);
+//                        };
+//                    }
+//                    WebGLCommand::ViewMatrix(*location) => {
+//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ViewMatrix");
+//
+//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
+//                        let arcore = &info.arcore;
+//                        if let Some(ctx) = Self::make_current_if_needed(&self.device, ctx_id, &self.contexts, &mut self.bound_context_id) {
+//                            //                            let location = arcore.uniform_mvp_mat_;
+//                            ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ViewMatrix  location = {}", location));
+//                            ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ViewMatrix  mvp = {:?}", &arcore.view_mat4x4));
+//                            if location == -1 {
+//                                ()
+//                            } else {
+//                                let data = Self::make_current_if_needed(
+//                                    &self.device,
+//                                    ctx_id,
+//                                    &self.contexts,
+//                                    &mut self.bound_context_id,
+//                                ).expect("WebGLContext not found");
+//                                data.gl.uniform_matrix_4fv(location, false, &arcore.view_mat4x4);
+//                            };
+//                        }
+//                    }
+
+                    _ => {}
+                }
                 self.handle_webgl_command(ctx_id, command, backtrace);
-            },
+            }
             WebGLMsg::WebVRCommand(ctx_id, command) => {
                 self.handle_webvr_command(ctx_id, command);
-            },
+            }
             WebGLMsg::CreateWebXRSwapChain(ctx_id, size, sender) => {
                 let _ = sender.send(self.create_webxr_swap_chain(ctx_id, size));
-            },
+            }
             WebGLMsg::SwapBuffers(swap_ids, sender) => {
                 self.handle_swap_buffers(swap_ids, sender);
-            },
+            }
             WebGLMsg::DOMToTextureCommand(command) => {
                 self.handle_dom_to_texture(command);
-            },
+            }
             WebGLMsg::Exit => {
                 return true;
-            },
+            }
         }
 
         false
+    }
+
+    fn handle_webar_command(&mut self, ctx_id: WebGLContextId, command: WebARCommand) {
+        let data = Self::make_current_if_needed(
+            &self.device,
+            ctx_id,
+            &self.contexts,
+            &mut self.bound_context_id,
+        ).expect("WebGLContext not found");
+
+        let mut arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+
+        match command {
+            WebARCommand::OnDisplayChanged(display_rotation, width, height) => {
+                arcore.on_display_changed(&*data.gl, display_rotation, width, height);
+            }
+            WebARCommand::OnDraw => {
+                arcore.on_draw(&*data.gl);
+            }
+        }
     }
 
     /// Handles a WebGLCommand for a specific WebGLContext
@@ -376,17 +485,17 @@ impl WebGLThread {
                         &mut data.ctx,
                         &mut self.device,
                     );
-                },
+                }
                 // Similarly, dropping a WebGL framebuffer needs access to the swap chains,
                 // in order to delete the entry.
                 WebGLCommand::DeleteFramebuffer(WebGLFramebufferId::Opaque(
-                    WebGLOpaqueFramebufferId::WebXR(id),
-                )) => {
+                                                    WebGLOpaqueFramebufferId::WebXR(id),
+                                                )) => {
                     let _ = self
                         .webxr_swap_chains
                         .destroy(id, &mut self.device, &mut data.ctx);
-                },
-                _ => {},
+                }
+                _ => {}
             }
 
             WebGLImpl::apply(
@@ -524,7 +633,7 @@ impl WebGLThread {
 
         let use_apple_vertex_array = WebGLImpl::needs_apple_vertex_arrays(gl_version);
         let default_vao = if let Some(vao) =
-            WebGLImpl::create_vertex_array(&gl, use_apple_vertex_array, webgl_version)
+        WebGLImpl::create_vertex_array(&gl, use_apple_vertex_array, webgl_version)
         {
             let vao = vao.get();
             WebGLImpl::bind_vertex_array(&gl, vao, use_apple_vertex_array, webgl_version);
@@ -557,8 +666,10 @@ impl WebGLThread {
             texture_target,
         );
 
+        let arcore = ::arcore_jni::init_arcore();
+
         self.cached_context_info
-            .insert(id, WebGLContextInfo { image_key });
+            .insert(id, WebGLContextInfo { image_key, arcore });
 
         Ok((id, limits))
     }
@@ -576,7 +687,7 @@ impl WebGLThread {
             &mut self.contexts,
             &mut self.bound_context_id,
         )
-        .expect("Missing WebGL context!");
+            .expect("Missing WebGL context!");
 
         let size = clamp_viewport(&data.gl, requested_size);
 
@@ -679,7 +790,7 @@ impl WebGLThread {
                 &mut self.contexts,
                 &mut self.bound_context_id,
             )
-            .expect("Where's the GL data?");
+                .expect("Where's the GL data?");
 
             // Ensure there are no pending GL errors from other parts of the pipeline.
             debug_assert_eq!(data.gl.get_error(), gl::NO_ERROR);
@@ -695,9 +806,9 @@ impl WebGLThread {
                 SwapChainId::Context(id) => self.webrender_swap_chains.get(id),
                 SwapChainId::Framebuffer(_, WebGLOpaqueFramebufferId::WebXR(id)) => {
                     self.webxr_swap_chains.get(id)
-                },
+                }
             }
-            .expect("Where's the swap chain?");
+                .expect("Where's the swap chain?");
 
             debug!("Swapping {:?}", swap_id);
             swap_chain
@@ -773,7 +884,7 @@ impl WebGLThread {
                     &self.contexts,
                     &mut self.bound_context_id,
                 )
-                .expect("WebGLContext not found in a WebGL DOMToTextureCommand::Attach command");
+                    .expect("WebGLContext not found in a WebGL DOMToTextureCommand::Attach command");
                 // Initialize the texture that WR will use for frame outputs.
                 data.gl.tex_image_2d(
                     gl::TEXTURE_2D,
@@ -798,12 +909,12 @@ impl WebGLThread {
                 let mut txn = webrender_api::Transaction::new();
                 txn.enable_frame_output(pipeline_id, true);
                 self.webrender_api.send_transaction(document_id, txn);
-            },
+            }
             DOMToTextureCommand::Lock(pipeline_id, gl_sync, sender) => {
                 let result = self.handle_dom_to_texture_lock(pipeline_id, gl_sync);
                 // Send the texture id and size to WR.
                 sender.send(result).unwrap();
-            },
+            }
             DOMToTextureCommand::Detach(texture_id) => {
                 if let Some((pipeline_id, document_id)) = self
                     .dom_outputs
@@ -816,7 +927,7 @@ impl WebGLThread {
                     self.webrender_api.send_transaction(document_id, txn);
                     self.dom_outputs.remove(&pipeline_id);
                 }
-            },
+            }
         }
     }
 
@@ -977,6 +1088,7 @@ impl Drop for WebGLThread {
 struct WebGLContextInfo {
     /// Currently used WebRender image key.
     image_key: webrender_api::ImageKey,
+    arcore: ::arcore_jni::ArCore,
 }
 
 // TODO(pcwalton): Add `GL_TEXTURE_EXTERNAL_OES`?
@@ -1015,32 +1127,40 @@ impl WebGLImpl {
         debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
 
         match command {
+            WebGLCommand::DrawBackground => (),
+            WebGLCommand::ProjectViewMatrix(_) => (),
+            WebGLCommand::ProjectMatrix(_) => (),
+            WebGLCommand::ViewMatrix(_) => (),
+            WebGLCommand::GetProjectMatrix(_) => (),
+            WebGLCommand::GetViewMatrix(_) => (),
+
+
             WebGLCommand::GetContextAttributes(ref sender) => sender.send(*attributes).unwrap(),
             WebGLCommand::ActiveTexture(target) => gl.active_texture(target),
             WebGLCommand::AttachShader(program_id, shader_id) => {
                 gl.attach_shader(program_id.get(), shader_id.get())
-            },
+            }
             WebGLCommand::DetachShader(program_id, shader_id) => {
                 gl.detach_shader(program_id.get(), shader_id.get())
-            },
+            }
             WebGLCommand::BindAttribLocation(program_id, index, ref name) => {
                 gl.bind_attrib_location(program_id.get(), index, &to_name_in_compiled_shader(name))
-            },
+            }
             WebGLCommand::BlendColor(r, g, b, a) => gl.blend_color(r, g, b, a),
             WebGLCommand::BlendEquation(mode) => gl.blend_equation(mode),
             WebGLCommand::BlendEquationSeparate(mode_rgb, mode_alpha) => {
                 gl.blend_equation_separate(mode_rgb, mode_alpha)
-            },
+            }
             WebGLCommand::BlendFunc(src, dest) => gl.blend_func(src, dest),
             WebGLCommand::BlendFuncSeparate(src_rgb, dest_rgb, src_alpha, dest_alpha) => {
                 gl.blend_func_separate(src_rgb, dest_rgb, src_alpha, dest_alpha)
-            },
+            }
             WebGLCommand::BufferData(buffer_type, ref receiver, usage) => {
                 gl::buffer_data(gl, buffer_type, &receiver.recv().unwrap(), usage)
-            },
+            }
             WebGLCommand::BufferSubData(buffer_type, offset, ref receiver) => {
                 gl::buffer_sub_data(gl, buffer_type, offset, &receiver.recv().unwrap())
-            },
+            }
             WebGLCommand::CopyBufferSubData(src, dst, src_offset, dst_offset, size) => {
                 gl.copy_buffer_sub_data(
                     src,
@@ -1049,7 +1169,7 @@ impl WebGLImpl {
                     dst_offset as isize,
                     size as isize,
                 );
-            },
+            }
             WebGLCommand::GetBufferSubData(buffer_type, offset, length, ref sender) => {
                 let ptr = gl.map_buffer_range(
                     buffer_type,
@@ -1060,23 +1180,23 @@ impl WebGLImpl {
                 let data: &[u8] = unsafe { slice::from_raw_parts(ptr as _, length) };
                 sender.send(data).unwrap();
                 gl.unmap_buffer(buffer_type);
-            },
+            }
             WebGLCommand::Clear(mask) => {
                 gl.clear(mask);
-            },
+            }
             WebGLCommand::ClearColor(r, g, b, a) => {
                 state.clear_color = (r, g, b, a);
                 gl.clear_color(r, g, b, a);
-            },
+            }
             WebGLCommand::ClearDepth(depth) => {
                 let value = depth.max(0.).min(1.) as f64;
                 state.depth_clear_value = value;
                 gl.clear_depth(value)
-            },
+            }
             WebGLCommand::ClearStencil(stencil) => {
                 state.stencil_clear_value = stencil;
                 gl.clear_stencil(stencil);
-            },
+            }
             WebGLCommand::ColorMask(r, g, b, a) => gl.color_mask(r, g, b, a),
             WebGLCommand::CopyTexImage2D(
                 target,
@@ -1103,22 +1223,22 @@ impl WebGLImpl {
             WebGLCommand::DepthMask(flag) => {
                 state.depth_write_mask = flag;
                 gl.depth_mask(flag);
-            },
+            }
             WebGLCommand::DepthRange(near, far) => {
                 gl.depth_range(near.max(0.).min(1.) as f64, far.max(0.).min(1.) as f64)
-            },
+            }
             WebGLCommand::Disable(cap) => {
                 if cap == gl::SCISSOR_TEST {
                     state.scissor_test_enabled = false;
                 }
                 gl.disable(cap);
-            },
+            }
             WebGLCommand::Enable(cap) => {
                 if cap == gl::SCISSOR_TEST {
                     state.scissor_test_enabled = true;
                 }
                 gl.enable(cap);
-            },
+            }
             WebGLCommand::FramebufferRenderbuffer(target, attachment, renderbuffertarget, rb) => {
                 let attach = |attachment| {
                     gl.framebuffer_renderbuffer(
@@ -1134,7 +1254,7 @@ impl WebGLImpl {
                 } else {
                     attach(attachment);
                 }
-            },
+            }
             WebGLCommand::FramebufferTexture2D(target, attachment, textarget, texture, level) => {
                 let attach = |attachment| {
                     gl.framebuffer_texture_2d(
@@ -1151,14 +1271,14 @@ impl WebGLImpl {
                 } else {
                     attach(attachment)
                 }
-            },
+            }
             WebGLCommand::FrontFace(mode) => gl.front_face(mode),
             WebGLCommand::DisableVertexAttribArray(attrib_id) => {
                 gl.disable_vertex_attrib_array(attrib_id)
-            },
+            }
             WebGLCommand::EnableVertexAttribArray(attrib_id) => {
                 gl.enable_vertex_attrib_array(attrib_id)
-            },
+            }
             WebGLCommand::Hint(name, val) => gl.hint(name, val),
             WebGLCommand::LineWidth(width) => gl.line_width(width),
             WebGLCommand::PixelStorei(name, val) => gl.pixel_store_i(name, val),
@@ -1173,7 +1293,7 @@ impl WebGLImpl {
                     pixel_type,
                 );
                 sender.send(&pixels).unwrap();
-            },
+            }
             WebGLCommand::ReadPixelsPP(rect, format, pixel_type, offset) => unsafe {
                 gl.read_pixels_into_pixel_pack_buffer(
                     rect.origin.x,
@@ -1187,22 +1307,22 @@ impl WebGLImpl {
             },
             WebGLCommand::RenderbufferStorage(target, format, width, height) => {
                 gl.renderbuffer_storage(target, format, width, height)
-            },
+            }
             WebGLCommand::SampleCoverage(value, invert) => gl.sample_coverage(value, invert),
             WebGLCommand::Scissor(x, y, width, height) => {
                 // FIXME(nox): Kinda unfortunate that some u32 values could
                 // end up as negative numbers here, but I don't even think
                 // that can happen in the real world.
                 gl.scissor(x, y, width as i32, height as i32);
-            },
+            }
             WebGLCommand::StencilFunc(func, ref_, mask) => gl.stencil_func(func, ref_, mask),
             WebGLCommand::StencilFuncSeparate(face, func, ref_, mask) => {
                 gl.stencil_func_separate(face, func, ref_, mask)
-            },
+            }
             WebGLCommand::StencilMask(mask) => {
                 state.stencil_write_mask = (mask, mask);
                 gl.stencil_mask(mask);
-            },
+            }
             WebGLCommand::StencilMaskSeparate(face, mask) => {
                 if face == gl::FRONT {
                     state.stencil_write_mask.0 = mask;
@@ -1210,49 +1330,49 @@ impl WebGLImpl {
                     state.stencil_write_mask.1 = mask;
                 }
                 gl.stencil_mask_separate(face, mask);
-            },
+            }
             WebGLCommand::StencilOp(fail, zfail, zpass) => gl.stencil_op(fail, zfail, zpass),
             WebGLCommand::StencilOpSeparate(face, fail, zfail, zpass) => {
                 gl.stencil_op_separate(face, fail, zfail, zpass)
-            },
+            }
             WebGLCommand::GetRenderbufferParameter(target, pname, ref chan) => {
                 Self::get_renderbuffer_parameter(gl, target, pname, chan)
-            },
+            }
             WebGLCommand::CreateTransformFeedback(ref sender) => {
                 let value = gl.gen_transform_feedbacks();
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::DeleteTransformFeedback(id) => {
                 gl.delete_transform_feedbacks(id);
-            },
+            }
             WebGLCommand::IsTransformFeedback(id, ref sender) => {
                 let value = gl.is_transform_feedback(id);
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::BindTransformFeedback(target, id) => {
                 gl.bind_transform_feedback(target, id);
-            },
+            }
             WebGLCommand::BeginTransformFeedback(mode) => {
                 gl.begin_transform_feedback(mode);
-            },
+            }
             WebGLCommand::EndTransformFeedback() => {
                 gl.end_transform_feedback();
-            },
+            }
             WebGLCommand::PauseTransformFeedback() => {
                 gl.pause_transform_feedback();
-            },
+            }
             WebGLCommand::ResumeTransformFeedback() => {
                 gl.resume_transform_feedback();
-            },
+            }
             WebGLCommand::GetTransformFeedbackVarying(program, index, ref sender) => {
                 let (size, ty, mut name) = gl.get_transform_feedback_varying(program.get(), index);
                 // We need to split, because the name starts with '_u' prefix.
                 name = name.split_off(2);
                 sender.send((size, ty, name)).unwrap();
-            },
+            }
             WebGLCommand::TransformFeedbackVaryings(program, ref varyings, buffer_mode) => {
                 gl.transform_feedback_varyings(program.get(), varyings.as_slice(), buffer_mode);
-            },
+            }
             WebGLCommand::GetFramebufferAttachmentParameter(
                 target,
                 attachment,
@@ -1261,20 +1381,20 @@ impl WebGLImpl {
             ) => Self::get_framebuffer_attachment_parameter(gl, target, attachment, pname, chan),
             WebGLCommand::GetShaderPrecisionFormat(shader_type, precision_type, ref chan) => {
                 Self::shader_precision_format(gl, shader_type, precision_type, chan)
-            },
+            }
             WebGLCommand::GetExtensions(ref chan) => Self::get_extensions(gl, chan),
             WebGLCommand::GetUniformLocation(program_id, ref name, ref chan) => {
                 Self::uniform_location(gl, program_id, &name, chan)
-            },
+            }
             WebGLCommand::GetShaderInfoLog(shader_id, ref chan) => {
                 Self::shader_info_log(gl, shader_id, chan)
-            },
+            }
             WebGLCommand::GetProgramInfoLog(program_id, ref chan) => {
                 Self::program_info_log(gl, program_id, chan)
-            },
+            }
             WebGLCommand::CompileShader(shader_id, ref source) => {
                 Self::compile_shader(gl, shader_id, &source)
-            },
+            }
             WebGLCommand::CreateBuffer(ref chan) => Self::create_buffer(gl, chan),
             WebGLCommand::CreateFramebuffer(ref chan) => Self::create_framebuffer(gl, chan),
             WebGLCommand::CreateRenderbuffer(ref chan) => Self::create_renderbuffer(gl, chan),
@@ -1282,28 +1402,28 @@ impl WebGLImpl {
             WebGLCommand::CreateProgram(ref chan) => Self::create_program(gl, chan),
             WebGLCommand::CreateShader(shader_type, ref chan) => {
                 Self::create_shader(gl, shader_type, chan)
-            },
+            }
             WebGLCommand::DeleteBuffer(id) => gl.delete_buffers(&[id.get()]),
             WebGLCommand::DeleteFramebuffer(WebGLFramebufferId::Transparent(id)) => {
                 gl.delete_framebuffers(&[id.get()])
-            },
-            WebGLCommand::DeleteFramebuffer(WebGLFramebufferId::Opaque(_)) => {},
+            }
+            WebGLCommand::DeleteFramebuffer(WebGLFramebufferId::Opaque(_)) => {}
             WebGLCommand::DeleteRenderbuffer(id) => gl.delete_renderbuffers(&[id.get()]),
             WebGLCommand::DeleteTexture(id) => gl.delete_textures(&[id.get()]),
             WebGLCommand::DeleteProgram(id) => gl.delete_program(id.get()),
             WebGLCommand::DeleteShader(id) => gl.delete_shader(id.get()),
             WebGLCommand::BindBuffer(target, id) => {
                 gl.bind_buffer(target, id.map_or(0, WebGLBufferId::get))
-            },
+            }
             WebGLCommand::BindFramebuffer(target, request) => {
                 Self::bind_framebuffer(gl, target, request, ctx, device)
-            },
+            }
             WebGLCommand::BindRenderbuffer(target, id) => {
                 gl.bind_renderbuffer(target, id.map_or(0, WebGLRenderbufferId::get))
-            },
+            }
             WebGLCommand::BindTexture(target, id) => {
                 gl.bind_texture(target, id.map_or(0, WebGLTextureId::get))
-            },
+            }
             WebGLCommand::Uniform1f(uniform_id, v) => gl.uniform_1f(uniform_id, v),
             WebGLCommand::Uniform1fv(uniform_id, ref v) => gl.uniform_1fv(uniform_id, v),
             WebGLCommand::Uniform1i(uniform_id, v) => gl.uniform_1i(uniform_id, v),
@@ -1324,50 +1444,50 @@ impl WebGLImpl {
             WebGLCommand::Uniform3uiv(uniform_id, ref v) => gl.uniform_3uiv(uniform_id, v),
             WebGLCommand::Uniform4f(uniform_id, x, y, z, w) => {
                 gl.uniform_4f(uniform_id, x, y, z, w)
-            },
+            }
             WebGLCommand::Uniform4fv(uniform_id, ref v) => gl.uniform_4fv(uniform_id, v),
             WebGLCommand::Uniform4i(uniform_id, x, y, z, w) => {
                 gl.uniform_4i(uniform_id, x, y, z, w)
-            },
+            }
             WebGLCommand::Uniform4iv(uniform_id, ref v) => gl.uniform_4iv(uniform_id, v),
             WebGLCommand::Uniform4ui(uniform_id, x, y, z, w) => {
                 gl.uniform_4ui(uniform_id, x, y, z, w)
-            },
+            }
             WebGLCommand::Uniform4uiv(uniform_id, ref v) => gl.uniform_4uiv(uniform_id, v),
             WebGLCommand::UniformMatrix2fv(uniform_id, ref v) => {
                 gl.uniform_matrix_2fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix3fv(uniform_id, ref v) => {
                 gl.uniform_matrix_3fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix4fv(uniform_id, ref v) => {
                 gl.uniform_matrix_4fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix3x2fv(uniform_id, ref v) => {
                 gl.uniform_matrix_3x2fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix4x2fv(uniform_id, ref v) => {
                 gl.uniform_matrix_4x2fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix2x3fv(uniform_id, ref v) => {
                 gl.uniform_matrix_2x3fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix4x3fv(uniform_id, ref v) => {
                 gl.uniform_matrix_4x3fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix2x4fv(uniform_id, ref v) => {
                 gl.uniform_matrix_2x4fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::UniformMatrix3x4fv(uniform_id, ref v) => {
                 gl.uniform_matrix_3x4fv(uniform_id, false, v)
-            },
+            }
             WebGLCommand::ValidateProgram(program_id) => gl.validate_program(program_id.get()),
             WebGLCommand::VertexAttrib(attrib_id, x, y, z, w) => {
                 gl.vertex_attrib_4f(attrib_id, x, y, z, w)
-            },
+            }
             WebGLCommand::VertexAttribPointer2f(attrib_id, size, normalized, stride, offset) => {
                 gl.vertex_attrib_pointer_f32(attrib_id, size, normalized, stride, offset)
-            },
+            }
             WebGLCommand::VertexAttribPointer(
                 attrib_id,
                 size,
@@ -1414,7 +1534,7 @@ impl WebGLImpl {
                     effective_data_type,
                     Some(&pixels),
                 );
-            },
+            }
             WebGLCommand::TexSubImage2D {
                 target,
                 level,
@@ -1453,7 +1573,7 @@ impl WebGLImpl {
                     effective_data_type,
                     &pixels,
                 );
-            },
+            }
             WebGLCommand::CompressedTexImage2D {
                 target,
                 level,
@@ -1470,7 +1590,7 @@ impl WebGLImpl {
                     0,
                     &*data,
                 );
-            },
+            }
             WebGLCommand::CompressedTexSubImage2D {
                 target,
                 level,
@@ -1490,7 +1610,7 @@ impl WebGLImpl {
                     format,
                     &*data,
                 );
-            },
+            }
             WebGLCommand::DrawingBufferWidth(ref sender) => {
                 let size = device
                     .context_surface_info(&ctx)
@@ -1498,7 +1618,7 @@ impl WebGLImpl {
                     .expect("Where's the front buffer?")
                     .size;
                 sender.send(size.width).unwrap()
-            },
+            }
             WebGLCommand::DrawingBufferHeight(ref sender) => {
                 let size = device
                     .context_surface_info(&ctx)
@@ -1506,7 +1626,7 @@ impl WebGLImpl {
                     .expect("Where's the front buffer?")
                     .size;
                 sender.send(size.height).unwrap()
-            },
+            }
             WebGLCommand::Finish(ref sender) => Self::finish(gl, sender),
             WebGLCommand::Flush => gl.flush(),
             WebGLCommand::GenerateMipmap(target) => gl.generate_mipmap(target),
@@ -1514,48 +1634,48 @@ impl WebGLImpl {
                 let use_apple_vertex_array = Self::needs_apple_vertex_arrays(state.gl_version);
                 let id = Self::create_vertex_array(gl, use_apple_vertex_array, state.webgl_version);
                 let _ = chan.send(id);
-            },
+            }
             WebGLCommand::DeleteVertexArray(id) => {
                 let use_apple_vertex_array = Self::needs_apple_vertex_arrays(state.gl_version);
                 let id = id.get();
                 Self::delete_vertex_array(gl, id, use_apple_vertex_array, state.webgl_version);
-            },
+            }
             WebGLCommand::BindVertexArray(id) => {
                 let id = id.map_or(state.default_vao, WebGLVertexArrayId::get);
                 let use_apple_vertex_array = Self::needs_apple_vertex_arrays(state.gl_version);
                 Self::bind_vertex_array(gl, id, use_apple_vertex_array, state.webgl_version);
-            },
+            }
             WebGLCommand::GetParameterBool(param, ref sender) => {
                 let mut value = [0];
                 unsafe {
                     gl.get_boolean_v(param as u32, &mut value);
                 }
                 sender.send(value[0] != 0).unwrap()
-            },
+            }
             WebGLCommand::FenceSync(ref sender) => {
                 let value = gl.fence_sync(gl::SYNC_GPU_COMMANDS_COMPLETE, 0);
                 sender
                     .send(unsafe { WebGLSyncId::new(value as u64) })
                     .unwrap();
-            },
+            }
             WebGLCommand::IsSync(sync_id, ref sender) => {
                 let value = gl.is_sync(sync_id.get() as *const _);
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::ClientWaitSync(sync_id, flags, timeout, ref sender) => {
                 let value = gl.client_wait_sync(sync_id.get() as *const _, flags, timeout as u64);
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::WaitSync(sync_id, flags, timeout) => {
                 gl.wait_sync(sync_id.get() as *const _, flags, timeout as u64);
-            },
+            }
             WebGLCommand::GetSyncParameter(sync_id, param, ref sender) => {
                 let value = gl.get_sync_iv(sync_id.get() as *const _, param);
                 sender.send(value[0] as u32).unwrap();
-            },
+            }
             WebGLCommand::DeleteSync(sync_id) => {
                 gl.delete_sync(sync_id.get() as *const _);
-            },
+            }
             WebGLCommand::GetParameterBool4(param, ref sender) => {
                 let mut value = [0; 4];
                 unsafe {
@@ -1563,92 +1683,92 @@ impl WebGLImpl {
                 }
                 let value = [value[0] != 0, value[1] != 0, value[2] != 0, value[3] != 0];
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetParameterInt(param, ref sender) => {
                 let mut value = [0];
                 unsafe {
                     gl.get_integer_v(param as u32, &mut value);
                 }
                 sender.send(value[0]).unwrap()
-            },
+            }
             WebGLCommand::GetParameterInt2(param, ref sender) => {
                 let mut value = [0; 2];
                 unsafe {
                     gl.get_integer_v(param as u32, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetParameterInt4(param, ref sender) => {
                 let mut value = [0; 4];
                 unsafe {
                     gl.get_integer_v(param as u32, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetParameterFloat(param, ref sender) => {
                 let mut value = [0.];
                 unsafe {
                     gl.get_float_v(param as u32, &mut value);
                 }
                 sender.send(value[0]).unwrap()
-            },
+            }
             WebGLCommand::GetParameterFloat2(param, ref sender) => {
                 let mut value = [0.; 2];
                 unsafe {
                     gl.get_float_v(param as u32, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetParameterFloat4(param, ref sender) => {
                 let mut value = [0.; 4];
                 unsafe {
                     gl.get_float_v(param as u32, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetProgramValidateStatus(program, ref sender) => {
                 let mut value = [0];
                 unsafe {
                     gl.get_program_iv(program.get(), gl::VALIDATE_STATUS, &mut value);
                 }
                 sender.send(value[0] != 0).unwrap()
-            },
+            }
             WebGLCommand::GetProgramActiveUniforms(program, ref sender) => {
                 let mut value = [0];
                 unsafe {
                     gl.get_program_iv(program.get(), gl::ACTIVE_UNIFORMS, &mut value);
                 }
                 sender.send(value[0]).unwrap()
-            },
+            }
             WebGLCommand::GetCurrentVertexAttrib(index, ref sender) => {
                 let mut value = [0.; 4];
                 unsafe {
                     gl.get_vertex_attrib_fv(index, gl::CURRENT_VERTEX_ATTRIB, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetTexParameterFloat(target, param, ref sender) => {
                 sender
                     .send(gl.get_tex_parameter_fv(target, param as u32))
                     .unwrap();
-            },
+            }
             WebGLCommand::GetTexParameterInt(target, param, ref sender) => {
                 sender
                     .send(gl.get_tex_parameter_iv(target, param as u32))
                     .unwrap();
-            },
+            }
             WebGLCommand::TexParameteri(target, param, value) => {
                 gl.tex_parameter_i(target, param as u32, value)
-            },
+            }
             WebGLCommand::TexParameterf(target, param, value) => {
                 gl.tex_parameter_f(target, param as u32, value)
-            },
+            }
             WebGLCommand::LinkProgram(program_id, ref sender) => {
                 return sender.send(Self::link_program(gl, program_id)).unwrap();
-            },
+            }
             WebGLCommand::UseProgram(program_id) => {
                 gl.use_program(program_id.map_or(0, |p| p.get()))
-            },
+            }
             WebGLCommand::DrawArrays { mode, first, count } => gl.draw_arrays(mode, first, count),
             WebGLCommand::DrawArraysInstanced {
                 mode,
@@ -1671,14 +1791,14 @@ impl WebGLImpl {
             } => gl.draw_elements_instanced(mode, count, type_, offset, primcount),
             WebGLCommand::VertexAttribDivisor { index, divisor } => {
                 gl.vertex_attrib_divisor(index, divisor)
-            },
+            }
             WebGLCommand::GetUniformBool(program_id, loc, ref sender) => {
                 let mut value = [0];
                 unsafe {
                     gl.get_uniform_iv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value[0] != 0).unwrap();
-            },
+            }
             WebGLCommand::GetUniformBool2(program_id, loc, ref sender) => {
                 let mut value = [0; 2];
                 unsafe {
@@ -1686,7 +1806,7 @@ impl WebGLImpl {
                 }
                 let value = [value[0] != 0, value[1] != 0];
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformBool3(program_id, loc, ref sender) => {
                 let mut value = [0; 3];
                 unsafe {
@@ -1694,7 +1814,7 @@ impl WebGLImpl {
                 }
                 let value = [value[0] != 0, value[1] != 0, value[2] != 0];
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformBool4(program_id, loc, ref sender) => {
                 let mut value = [0; 4];
                 unsafe {
@@ -1702,152 +1822,152 @@ impl WebGLImpl {
                 }
                 let value = [value[0] != 0, value[1] != 0, value[2] != 0, value[3] != 0];
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformInt(program_id, loc, ref sender) => {
                 let mut value = [0];
                 unsafe {
                     gl.get_uniform_iv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value[0]).unwrap();
-            },
+            }
             WebGLCommand::GetUniformInt2(program_id, loc, ref sender) => {
                 let mut value = [0; 2];
                 unsafe {
                     gl.get_uniform_iv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformInt3(program_id, loc, ref sender) => {
                 let mut value = [0; 3];
                 unsafe {
                     gl.get_uniform_iv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformInt4(program_id, loc, ref sender) => {
                 let mut value = [0; 4];
                 unsafe {
                     gl.get_uniform_iv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformUint(program_id, loc, ref sender) => {
                 let mut value = [0];
                 unsafe {
                     gl.get_uniform_uiv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value[0]).unwrap();
-            },
+            }
             WebGLCommand::GetUniformUint2(program_id, loc, ref sender) => {
                 let mut value = [0; 2];
                 unsafe {
                     gl.get_uniform_uiv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformUint3(program_id, loc, ref sender) => {
                 let mut value = [0; 3];
                 unsafe {
                     gl.get_uniform_uiv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformUint4(program_id, loc, ref sender) => {
                 let mut value = [0; 4];
                 unsafe {
                     gl.get_uniform_uiv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformFloat(program_id, loc, ref sender) => {
                 let mut value = [0.];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value[0]).unwrap();
-            },
+            }
             WebGLCommand::GetUniformFloat2(program_id, loc, ref sender) => {
                 let mut value = [0.; 2];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformFloat3(program_id, loc, ref sender) => {
                 let mut value = [0.; 3];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformFloat4(program_id, loc, ref sender) => {
                 let mut value = [0.; 4];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformFloat9(program_id, loc, ref sender) => {
                 let mut value = [0.; 9];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformFloat16(program_id, loc, ref sender) => {
                 let mut value = [0.; 16];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetUniformFloat2x3(program_id, loc, ref sender) => {
                 let mut value = [0.; 2 * 3];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetUniformFloat2x4(program_id, loc, ref sender) => {
                 let mut value = [0.; 2 * 4];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetUniformFloat3x2(program_id, loc, ref sender) => {
                 let mut value = [0.; 3 * 2];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetUniformFloat3x4(program_id, loc, ref sender) => {
                 let mut value = [0.; 3 * 4];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetUniformFloat4x2(program_id, loc, ref sender) => {
                 let mut value = [0.; 4 * 2];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetUniformFloat4x3(program_id, loc, ref sender) => {
                 let mut value = [0.; 4 * 3];
                 unsafe {
                     gl.get_uniform_fv(program_id.get(), loc, &mut value);
                 }
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GetUniformBlockIndex(program_id, ref name, ref sender) => {
                 let name = to_name_in_compiled_shader(name);
                 let index = gl.get_uniform_block_index(program_id.get(), &name);
                 sender.send(index).unwrap();
-            },
+            }
             WebGLCommand::GetUniformIndices(program_id, ref names, ref sender) => {
                 let names = names
                     .iter()
@@ -1856,15 +1976,15 @@ impl WebGLImpl {
                 let name_strs = names.iter().map(|name| name.as_str()).collect::<Vec<_>>();
                 let indices = gl.get_uniform_indices(program_id.get(), &name_strs);
                 sender.send(indices).unwrap();
-            },
+            }
             WebGLCommand::GetActiveUniforms(program_id, ref indices, pname, ref sender) => {
                 let results = gl.get_active_uniforms_iv(program_id.get(), indices, pname);
                 sender.send(results).unwrap();
-            },
+            }
             WebGLCommand::GetActiveUniformBlockName(program_id, block_idx, ref sender) => {
                 let name = gl.get_active_uniform_block_name(program_id.get(), block_idx);
                 sender.send(name).unwrap();
-            },
+            }
             WebGLCommand::GetActiveUniformBlockParameter(
                 program_id,
                 block_idx,
@@ -1873,10 +1993,10 @@ impl WebGLImpl {
             ) => {
                 let results = gl.get_active_uniform_block_iv(program_id.get(), block_idx, pname);
                 sender.send(results).unwrap();
-            },
+            }
             WebGLCommand::UniformBlockBinding(program_id, block_idx, block_binding) => {
                 gl.uniform_block_binding(program_id.get(), block_idx, block_binding)
-            },
+            }
             WebGLCommand::InitializeFramebuffer {
                 color,
                 depth,
@@ -1884,48 +2004,48 @@ impl WebGLImpl {
             } => Self::initialize_framebuffer(gl, state, color, depth, stencil),
             WebGLCommand::BeginQuery(target, query_id) => {
                 gl.begin_query(target, query_id.get());
-            },
+            }
             WebGLCommand::EndQuery(target) => {
                 gl.end_query(target);
-            },
+            }
             WebGLCommand::DeleteQuery(query_id) => {
                 gl.delete_queries(&[query_id.get()]);
-            },
+            }
             WebGLCommand::GenerateQuery(ref sender) => {
                 let id = gl.gen_queries(1)[0];
                 sender.send(unsafe { WebGLQueryId::new(id) }).unwrap()
-            },
+            }
             WebGLCommand::GetQueryState(ref sender, query_id, pname) => {
                 let value = gl.get_query_object_uiv(query_id.get(), pname);
                 sender.send(value).unwrap()
-            },
+            }
             WebGLCommand::GenerateSampler(ref sender) => {
                 let id = gl.gen_samplers(1)[0];
                 sender.send(unsafe { WebGLSamplerId::new(id) }).unwrap()
-            },
+            }
             WebGLCommand::DeleteSampler(sampler_id) => {
                 gl.delete_samplers(&[sampler_id.get()]);
-            },
+            }
             WebGLCommand::BindSampler(unit, sampler_id) => {
                 gl.bind_sampler(unit, sampler_id.get());
-            },
+            }
             WebGLCommand::SetSamplerParameterInt(sampler_id, pname, value) => {
                 gl.sampler_parameter_i(sampler_id.get(), pname, value);
-            },
+            }
             WebGLCommand::SetSamplerParameterFloat(sampler_id, pname, value) => {
                 gl.sampler_parameter_f(sampler_id.get(), pname, value);
-            },
+            }
             WebGLCommand::GetSamplerParameterInt(sampler_id, pname, ref sender) => {
                 let value = gl.get_sampler_parameter_iv(sampler_id.get(), pname)[0];
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::GetSamplerParameterFloat(sampler_id, pname, ref sender) => {
                 let value = gl.get_sampler_parameter_fv(sampler_id.get(), pname)[0];
                 sender.send(value).unwrap();
-            },
+            }
             WebGLCommand::BindBufferBase(target, index, id) => {
                 gl.bind_buffer_base(target, index, id.map_or(0, WebGLBufferId::get))
-            },
+            }
             WebGLCommand::BindBufferRange(target, index, id, offset, size) => gl.bind_buffer_range(
                 target,
                 index,
@@ -1937,34 +2057,34 @@ impl WebGLImpl {
 
         // If debug asertions are enabled, then check the error state.
         #[cfg(debug_assertions)]
-        {
-            let error = gl.get_error();
-            if error != gl::NO_ERROR {
-                error!("Last GL operation failed: {:?}", command);
-                if error == gl::INVALID_FRAMEBUFFER_OPERATION {
-                    let mut framebuffer_bindings = [0];
-                    unsafe {
-                        gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut framebuffer_bindings);
+            {
+                let error = gl.get_error();
+                if error != gl::NO_ERROR {
+                    error!("Last GL operation failed: {:?}", command);
+                    if error == gl::INVALID_FRAMEBUFFER_OPERATION {
+                        let mut framebuffer_bindings = [0];
+                        unsafe {
+                            gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut framebuffer_bindings);
+                        }
+                        debug!(
+                            "(thread {:?}) Current draw framebuffer binding: {}",
+                            ::std::thread::current().id(),
+                            framebuffer_bindings[0]
+                        );
                     }
-                    debug!(
-                        "(thread {:?}) Current draw framebuffer binding: {}",
-                        ::std::thread::current().id(),
-                        framebuffer_bindings[0]
+                    #[cfg(feature = "webgl_backtrace")]
+                        {
+                            error!("Backtrace from failed WebGL API:\n{}", _backtrace.backtrace);
+                            if let Some(backtrace) = _backtrace.js_backtrace {
+                                error!("JS backtrace from failed WebGL API:\n{}", backtrace);
+                            }
+                        }
+                    panic!(
+                        "Unexpected WebGL error: 0x{:x} ({}) [{:?}]",
+                        error, error, command
                     );
                 }
-                #[cfg(feature = "webgl_backtrace")]
-                {
-                    error!("Backtrace from failed WebGL API:\n{}", _backtrace.backtrace);
-                    if let Some(backtrace) = _backtrace.js_backtrace {
-                        error!("JS backtrace from failed WebGL API:\n{}", backtrace);
-                    }
-                }
-                panic!(
-                    "Unexpected WebGL error: 0x{:x} ({}) [{:?}]",
-                    error, error, command
-                );
             }
-        }
     }
 
     fn initialize_framebuffer(gl: &Gl, state: &GLState, color: bool, depth: bool, stencil: bool) {
@@ -1973,10 +2093,10 @@ impl WebGLImpl {
             (depth, gl::DEPTH_BUFFER_BIT),
             (stencil, gl::STENCIL_BUFFER_BIT),
         ]
-        .iter()
-        .fold(0, |bits, &(enabled, bit)| {
-            bits | if enabled { bit } else { 0 }
-        });
+            .iter()
+            .fold(0, |bits, &(enabled, bit)| {
+                bits | if enabled { bit } else { 0 }
+            });
 
         if state.scissor_test_enabled {
             gl.disable(gl::SCISSOR_TEST);
@@ -2291,12 +2411,12 @@ impl WebGLImpl {
                     gl.GenVertexArraysAPPLE(ids.len() as gl::GLsizei, ids.as_mut_ptr());
                 }
                 ids[0]
-            },
+            }
             Gl::Gles(ref gles) if version == WebGLVersion::WebGL1 => {
                 let mut ids = vec![0];
                 unsafe { gles.GenVertexArraysOES(ids.len() as gl::GLsizei, ids.as_mut_ptr()) }
                 ids[0]
-            },
+            }
             _ => gl.gen_vertex_arrays(1)[0],
         };
         if vao == 0 {
@@ -2353,8 +2473,8 @@ impl WebGLImpl {
         let requested_framebuffer = match request {
             WebGLFramebufferBindingRequest::Explicit(WebGLFramebufferId::Opaque(id)) => Some(id),
             WebGLFramebufferBindingRequest::Explicit(WebGLFramebufferId::Transparent(_)) => {
-                return None
-            },
+                return None;
+            }
             WebGLFramebufferBindingRequest::Default => None,
         };
         let attached_framebuffer = webxr_swap_chains
@@ -2396,7 +2516,7 @@ impl WebGLImpl {
         let id = match request {
             WebGLFramebufferBindingRequest::Explicit(WebGLFramebufferId::Transparent(id)) => {
                 id.get()
-            },
+            }
             WebGLFramebufferBindingRequest::Explicit(WebGLFramebufferId::Opaque(_)) |
             WebGLFramebufferBindingRequest::Default => {
                 device
@@ -2404,7 +2524,7 @@ impl WebGLImpl {
                     .unwrap()
                     .expect("No surface attached!")
                     .framebuffer_object
-            },
+            }
         };
 
         debug!("WebGLImpl::bind_framebuffer: {:?}", id);
@@ -2468,19 +2588,19 @@ fn prepare_pixels(
         Some(AlphaTreatment::Premultiply) => {
             if let Some(pixel_format) = pixel_format {
                 match pixel_format {
-                    PixelFormat::BGRA8 | PixelFormat::RGBA8 => {},
+                    PixelFormat::BGRA8 | PixelFormat::RGBA8 => {}
                     _ => unimplemented!("unsupported pixel format ({:?})", pixel_format),
                 }
                 premultiply_inplace(TexFormat::RGBA, TexDataType::UnsignedByte, pixels.to_mut());
             } else {
                 premultiply_inplace(internal_format, data_type, pixels.to_mut());
             }
-        },
+        }
         Some(AlphaTreatment::Unmultiply) => {
             assert!(pixel_format.is_some());
             unmultiply_inplace(pixels.to_mut());
-        },
-        None => {},
+        }
+        None => {}
     }
 
     if let Some(pixel_format) = pixel_format {
@@ -2490,7 +2610,7 @@ fn prepare_pixels(
             data_type,
             pixels.into_owned(),
         )
-        .into();
+            .into();
     }
 
     if y_axis_treatment == YAxisTreatment::Flipped {
@@ -2503,7 +2623,7 @@ fn prepare_pixels(
             unpacking_alignment as usize,
             pixels.into_owned(),
         )
-        .into();
+            .into();
     }
 
     pixels
@@ -2522,7 +2642,7 @@ fn image_to_tex_image_data(
 
     match pixel_format {
         PixelFormat::BGRA8 => pixels::rgba8_byte_swap_colors_inplace(&mut pixels),
-        PixelFormat::RGBA8 => {},
+        PixelFormat::RGBA8 => {}
         _ => unimplemented!("unsupported pixel format ({:?})", pixel_format),
     }
 
@@ -2538,7 +2658,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count * 3);
             pixels
-        },
+        }
         (TexFormat::Alpha, TexDataType::UnsignedByte) => {
             for i in 0..pixel_count {
                 let p = pixels[i * 4 + 3];
@@ -2546,7 +2666,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count);
             pixels
-        },
+        }
         (TexFormat::Luminance, TexDataType::UnsignedByte) => {
             for i in 0..pixel_count {
                 let p = pixels[i * 4];
@@ -2554,7 +2674,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count);
             pixels
-        },
+        }
         (TexFormat::LuminanceAlpha, TexDataType::UnsignedByte) => {
             for i in 0..pixel_count {
                 let (lum, a) = {
@@ -2566,7 +2686,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count * 2);
             pixels
-        },
+        }
         (TexFormat::RGBA, TexDataType::UnsignedShort4444) => {
             for i in 0..pixel_count {
                 let p = {
@@ -2580,7 +2700,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count * 2);
             pixels
-        },
+        }
         (TexFormat::RGBA, TexDataType::UnsignedShort5551) => {
             for i in 0..pixel_count {
                 let p = {
@@ -2594,7 +2714,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count * 2);
             pixels
-        },
+        }
         (TexFormat::RGB, TexDataType::UnsignedShort565) => {
             for i in 0..pixel_count {
                 let p = {
@@ -2607,7 +2727,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count * 2);
             pixels
-        },
+        }
         (TexFormat::RGBA, TexDataType::Float) => {
             let mut rgbaf32 = Vec::<u8>::with_capacity(pixel_count * 16);
             for rgba8 in pixels.chunks(4) {
@@ -2617,7 +2737,7 @@ fn image_to_tex_image_data(
                 rgbaf32.write_f32::<NativeEndian>(rgba8[3] as f32).unwrap();
             }
             rgbaf32
-        },
+        }
 
         (TexFormat::RGB, TexDataType::Float) => {
             let mut rgbf32 = Vec::<u8>::with_capacity(pixel_count * 12);
@@ -2627,7 +2747,7 @@ fn image_to_tex_image_data(
                 rgbf32.write_f32::<NativeEndian>(rgba8[2] as f32).unwrap();
             }
             rgbf32
-        },
+        }
 
         (TexFormat::Alpha, TexDataType::Float) => {
             for rgba8 in pixels.chunks_mut(4) {
@@ -2635,7 +2755,7 @@ fn image_to_tex_image_data(
                 NativeEndian::write_f32(rgba8, p);
             }
             pixels
-        },
+        }
 
         (TexFormat::Luminance, TexDataType::Float) => {
             for rgba8 in pixels.chunks_mut(4) {
@@ -2643,7 +2763,7 @@ fn image_to_tex_image_data(
                 NativeEndian::write_f32(rgba8, p);
             }
             pixels
-        },
+        }
 
         (TexFormat::LuminanceAlpha, TexDataType::Float) => {
             let mut data = Vec::<u8>::with_capacity(pixel_count * 8);
@@ -2652,7 +2772,7 @@ fn image_to_tex_image_data(
                 data.write_f32::<NativeEndian>(rgba8[3] as f32).unwrap();
             }
             data
-        },
+        }
 
         (TexFormat::RGBA, TexDataType::HalfFloat) => {
             let mut rgbaf16 = Vec::<u8>::with_capacity(pixel_count * 8);
@@ -2671,7 +2791,7 @@ fn image_to_tex_image_data(
                     .unwrap();
             }
             rgbaf16
-        },
+        }
 
         (TexFormat::RGB, TexDataType::HalfFloat) => {
             let mut rgbf16 = Vec::<u8>::with_capacity(pixel_count * 6);
@@ -2687,7 +2807,7 @@ fn image_to_tex_image_data(
                     .unwrap();
             }
             rgbf16
-        },
+        }
         (TexFormat::Alpha, TexDataType::HalfFloat) => {
             for i in 0..pixel_count {
                 let p = f16::from_f32(pixels[i * 4 + 3] as f32).as_bits();
@@ -2695,7 +2815,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count * 2);
             pixels
-        },
+        }
         (TexFormat::Luminance, TexDataType::HalfFloat) => {
             for i in 0..pixel_count {
                 let p = f16::from_f32(pixels[i * 4] as f32).as_bits();
@@ -2703,7 +2823,7 @@ fn image_to_tex_image_data(
             }
             pixels.truncate(pixel_count * 2);
             pixels
-        },
+        }
         (TexFormat::LuminanceAlpha, TexDataType::HalfFloat) => {
             for rgba8 in pixels.chunks_mut(4) {
                 let lum = f16::from_f32(rgba8[0] as f32).as_bits();
@@ -2712,7 +2832,7 @@ fn image_to_tex_image_data(
                 NativeEndian::write_u16(&mut rgba8[2..4], a);
             }
             pixels
-        },
+        }
 
         // Validation should have ensured that we only hit the
         // above cases, but we haven't turned the (format, type)
@@ -2725,19 +2845,19 @@ fn premultiply_inplace(format: TexFormat, data_type: TexDataType, pixels: &mut [
     match (format, data_type) {
         (TexFormat::RGBA, TexDataType::UnsignedByte) => {
             pixels::rgba8_premultiply_inplace(pixels);
-        },
+        }
         (TexFormat::LuminanceAlpha, TexDataType::UnsignedByte) => {
             for la in pixels.chunks_mut(2) {
                 la[0] = pixels::multiply_u8_color(la[0], la[1]);
             }
-        },
+        }
         (TexFormat::RGBA, TexDataType::UnsignedShort5551) => {
             for rgba in pixels.chunks_mut(2) {
                 if NativeEndian::read_u16(rgba) & 1 == 0 {
                     NativeEndian::write_u16(rgba, 0);
                 }
             }
-        },
+        }
         (TexFormat::RGBA, TexDataType::UnsignedShort4444) => {
             for rgba in pixels.chunks_mut(2) {
                 let pix = NativeEndian::read_u16(rgba);
@@ -2754,9 +2874,9 @@ fn premultiply_inplace(format: TexFormat, data_type: TexDataType, pixels: &mut [
                         ((a & 0x0f) as u16),
                 );
             }
-        },
+        }
         // Other formats don't have alpha, so return their data untouched.
-        _ => {},
+        _ => {}
     }
 }
 
@@ -2800,7 +2920,7 @@ fn flip_pixels_y(
 fn clamp_viewport(gl: &Gl, size: Size2D<u32>) -> Size2D<u32> {
     let mut max_size = [i32::max_value(), i32::max_value()];
     #[allow(unsafe_code)]
-    unsafe {
+        unsafe {
         gl.get_integer_v(gl::MAX_VIEWPORT_DIMS, &mut max_size);
         debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
     }

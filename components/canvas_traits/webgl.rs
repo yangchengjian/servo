@@ -233,9 +233,21 @@ impl<T> Deref for TruncatedDebug<T> {
     }
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+pub enum WebARCommand {
+    OnDisplayChanged(i32, i32, i32),
+    OnDraw,
+}
+
 /// WebGL Commands for a specific WebGLContext
 #[derive(Debug, Deserialize, Serialize)]
 pub enum WebGLCommand {
+    DrawBackground,
+    ProjectViewMatrix(i32),
+    ProjectMatrix(i32),
+    ViewMatrix(i32),
+    GetProjectMatrix(WebGLSender<Vec<f32>>),
+    GetViewMatrix(WebGLSender<Vec<f32>>),
     GetContextAttributes(WebGLSender<GLContextAttributes>),
     ActiveTexture(u32),
     BlendColor(f32, f32, f32, f32),

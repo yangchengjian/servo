@@ -692,6 +692,16 @@ interface mixin WebGLRenderingContextBase
                              GLboolean normalized, GLsizei stride, GLintptr offset);
 
     void viewport(GLint x, GLint y, GLsizei width, GLsizei height);
+
+
+//*********************   AR    ******************************
+        void drawBackground();
+//        void projectViewMatrix(WebGLUniformLocation? location);
+//        void projectMatrix(WebGLUniformLocation? location);
+//        void viewMatrix(WebGLUniformLocation? location);
+        Float32Array getProjectMatrix();
+        Float32Array getViewMatrix();
+//*************************************************************
 };
 
 [Exposed=Window]
