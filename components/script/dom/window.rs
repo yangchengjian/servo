@@ -33,7 +33,7 @@ use crate::dom::cssstyledeclaration::{CSSModificationAccess, CSSStyleDeclaration
 use crate::dom::customelementregistry::CustomElementRegistry;
 use crate::dom::document::{AnimationFrameCallback, Document};
 use crate::dom::element::Element;
-use crate::dom::event::Event;
+use crate::dom::event::{Event, EventStatus};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::hashchangeevent::HashChangeEvent;
@@ -47,6 +47,7 @@ use crate::dom::node::{document_from_node, from_untrusted_node_address, Node, No
 use crate::dom::performance::Performance;
 use crate::dom::promise::Promise;
 use crate::dom::screen::Screen;
+use crate::dom::selection::Selection;
 use crate::dom::storage::Storage;
 use crate::dom::testrunner::TestRunner;
 use crate::dom::webglrenderingcontext::WebGLCommandSender;
@@ -527,6 +528,14 @@ impl Window {
 
     pub fn get_event_loop_waker(&self) -> Option<Box<dyn EventLoopWaker>> {
         self.event_loop_waker.as_ref().map(|w| (*w).clone_box())
+    }
+
+    // see note at https://dom.spec.whatwg.org/#concept-event-dispatch step 2
+    pub fn dispatch_event_with_target_override(&self, event: &Event) -> EventStatus {
+        if self.has_document() {
+            assert!(self.Document().can_invoke_script());
+        }
+        event.dispatch(self.upcast(), true)
     }
 }
 
@@ -1314,6 +1323,11 @@ impl WindowMethods for Window {
     fn Origin(&self) -> USVString {
         USVString(self.origin().immutable().ascii_serialization())
     }
+
+    // https://w3c.github.io/selection-api/#dom-window-getselection
+    fn GetSelection(&self) -> Option<DomRoot<Selection>> {
+        self.document.get().and_then(|d| d.GetSelection())
+    }
 }
 
 impl Window {
@@ -1784,7 +1798,7 @@ impl Window {
     }
 
     pub fn client_rect_query(&self, node: &Node) -> UntypedRect<i32> {
-        if !self.layout_reflow(QueryMsg::NodeGeometryQuery(node.to_opaque())) {
+        if !self.layout_reflow(QueryMsg::ClientRectQuery(node.to_opaque())) {
             return Rect::zero();
         }
         self.layout_rpc.node_geometry().client_rect
@@ -2372,7 +2386,7 @@ fn debug_reflow_events(id: PipelineId, reflow_goal: &ReflowGoal, reason: &Reflow
             &QueryMsg::ContentBoxQuery(_n) => "\tContentBoxQuery",
             &QueryMsg::ContentBoxesQuery(_n) => "\tContentBoxesQuery",
             &QueryMsg::NodesFromPointQuery(..) => "\tNodesFromPointQuery",
-            &QueryMsg::NodeGeometryQuery(_n) => "\tNodeGeometryQuery",
+            &QueryMsg::ClientRectQuery(_n) => "\tClientRectQuery",
             &QueryMsg::NodeScrollGeometryQuery(_n) => "\tNodeScrollGeometryQuery",
             &QueryMsg::NodeScrollIdQuery(_n) => "\tNodeScrollIdQuery",
             &QueryMsg::ResolvedStyleQuery(_, _, _) => "\tResolvedStyleQuery",

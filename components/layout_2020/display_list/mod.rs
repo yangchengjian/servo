@@ -9,19 +9,19 @@ use crate::replaced::IntrinsicSizes;
 use embedder_traits::Cursor;
 use euclid::{Point2D, SideOffsets2D, Size2D};
 use gfx::text::glyph::GlyphStore;
-use gfx_traits::{combine_id_with_fragment_type, FragmentType};
 use mitochondria::OnceCell;
 use net_traits::image_cache::UsePlaceholder;
 use std::sync::Arc;
-use style::computed_values::overflow_x::T as ComputedOverflow;
 use style::dom::OpaqueNode;
 use style::properties::ComputedValues;
+
 use style::values::computed::{BorderStyle, Length, LengthPercentage};
 use style::values::specified::ui::CursorKind;
 use webrender_api::{self as wr, units};
 
 mod background;
 mod gradient;
+pub mod stacking_context;
 
 #[derive(Clone, Copy)]
 pub struct WebRenderImageInfo {
@@ -81,15 +81,7 @@ impl Fragment {
     ) {
         match self {
             Fragment::Box(b) => BuilderForBoxFragment::new(b, containing_block).build(builder),
-            Fragment::Anonymous(a) => {
-                let rect = a
-                    .rect
-                    .to_physical(a.mode, containing_block)
-                    .translate(containing_block.origin.to_vector());
-                for child in &a.children {
-                    child.build_display_list(builder, &rect)
-                }
-            },
+            Fragment::Anonymous(_) => {},
             Fragment::Text(t) => {
                 builder.is_contentful = true;
                 let rect = t
@@ -244,6 +236,12 @@ impl<'a> BuilderForBoxFragment<'a> {
     }
 
     fn build(&mut self, builder: &mut DisplayListBuilder) {
+        self.build_hit_test(builder);
+        self.build_background(builder);
+        self.build_border(builder);
+    }
+
+    fn build_hit_test(&self, builder: &mut DisplayListBuilder) {
         let hit_info = hit_info(&self.fragment.style, self.fragment.tag, Cursor::Default);
         if hit_info.is_some() {
             let mut common = builder.common_properties(self.border_rect);
@@ -253,52 +251,6 @@ impl<'a> BuilderForBoxFragment<'a> {
             }
             builder.wr.push_hit_test(&common)
         }
-
-        self.build_background(builder);
-        self.build_border(builder);
-
-        builder.clipping_and_scrolling_scope(|builder| {
-            let overflow_x = self.fragment.style.get_box().overflow_x;
-            let overflow_y = self.fragment.style.get_box().overflow_y;
-            let original_scroll_and_clip_info = builder.current_space_and_clip;
-            if overflow_x != ComputedOverflow::Visible || overflow_y != ComputedOverflow::Visible {
-                // TODO(mrobinson): We should use the correct fragment type, once we generate
-                // fragments from ::before and ::after generated content selectors.
-                let id = combine_id_with_fragment_type(
-                    self.fragment.tag.id() as usize,
-                    FragmentType::FragmentBody,
-                ) as u64;
-                let external_id = wr::ExternalScrollId(id, builder.wr.pipeline_id);
-
-                let sensitivity = if ComputedOverflow::Hidden == overflow_x &&
-                    ComputedOverflow::Hidden == overflow_y
-                {
-                    wr::ScrollSensitivity::Script
-                } else {
-                    wr::ScrollSensitivity::ScriptAndInputEvents
-                };
-
-                builder.current_space_and_clip = builder.wr.define_scroll_frame(
-                    &original_scroll_and_clip_info,
-                    Some(external_id),
-                    self.fragment.scrollable_overflow().to_webrender(),
-                    *self.padding_rect(),
-                    vec![], // complex_clips
-                    None,   // image_mask
-                    sensitivity,
-                    wr::units::LayoutVector2D::zero(),
-                );
-            }
-
-            let content_rect = self
-                .fragment
-                .content_rect
-                .to_physical(self.fragment.style.writing_mode, self.containing_block)
-                .translate(self.containing_block.origin.to_vector());
-            for child in &self.fragment.children {
-                child.build_display_list(builder, &content_rect)
-            }
-        });
     }
 
     fn build_background(&mut self, builder: &mut DisplayListBuilder) {

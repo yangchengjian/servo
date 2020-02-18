@@ -16,6 +16,7 @@ use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::canvasgradient::{CanvasGradient, CanvasGradientStyle, ToFillOrStrokeStyle};
 use crate::dom::canvaspattern::CanvasPattern;
+use crate::dom::dommatrix::DOMMatrix;
 use crate::dom::element::cors_setting_for_element;
 use crate::dom::element::Element;
 use crate::dom::globalscope::GlobalScope;
@@ -382,12 +383,30 @@ impl CanvasState {
     ) -> ErrorResult {
         let result = match image {
             CanvasImageSource::HTMLCanvasElement(ref canvas) => {
+                // https://html.spec.whatwg.org/multipage/#check-the-usability-of-the-image-argument
+                if !canvas.is_valid() {
+                    return Err(Error::InvalidState);
+                }
+
                 self.draw_html_canvas_element(&canvas, htmlcanvas, sx, sy, sw, sh, dx, dy, dw, dh)
             },
             CanvasImageSource::OffscreenCanvas(ref canvas) => {
+                // https://html.spec.whatwg.org/multipage/#check-the-usability-of-the-image-argument
+                if !canvas.is_valid() {
+                    return Err(Error::InvalidState);
+                }
+
                 self.draw_offscreen_canvas(&canvas, htmlcanvas, sx, sy, sw, sh, dx, dy, dw, dh)
             },
             CanvasImageSource::HTMLImageElement(ref image) => {
+                // https://html.spec.whatwg.org/multipage/#drawing-images
+                // 2. Let usability be the result of checking the usability of image.
+                // 3. If usability is bad, then return (without drawing anything).
+                if !image.is_usable()? {
+                    return Ok(());
+                }
+
+                // TODO(pylbrecht): is it possible for image.get_url() to return None after the usability check?
                 // https://html.spec.whatwg.org/multipage/#img-error
                 // If the image argument is an HTMLImageElement object that is in the broken state,
                 // then throw an InvalidStateError exception
@@ -877,12 +896,14 @@ impl CanvasState {
         global: &GlobalScope,
         image: CanvasImageSource,
         mut repetition: DOMString,
-    ) -> Fallible<DomRoot<CanvasPattern>> {
+    ) -> Fallible<Option<DomRoot<CanvasPattern>>> {
         let (image_data, image_size) = match image {
             CanvasImageSource::HTMLImageElement(ref image) => {
-                // https://html.spec.whatwg.org/multipage/#img-error
-                // If the image argument is an HTMLImageElement object that is in the broken state,
-                // then throw an InvalidStateError exception
+                // https://html.spec.whatwg.org/multipage/#check-the-usability-of-the-image-argument
+                if !image.is_usable()? {
+                    return Ok(None);
+                }
+
                 image
                     .get_url()
                     .and_then(|url| {
@@ -915,13 +936,13 @@ impl CanvasState {
         }
 
         if let Ok(rep) = RepetitionStyle::from_str(&repetition) {
-            Ok(CanvasPattern::new(
+            Ok(Some(CanvasPattern::new(
                 global,
                 image_data,
                 image_size,
                 rep,
                 self.is_origin_clean(image),
-            ))
+            )))
         } else {
             Err(Error::Syntax)
         }
@@ -1393,6 +1414,15 @@ impl CanvasState {
             a as f32, b as f32, c as f32, d as f32, e as f32, f as f32,
         ));
         self.update_transform()
+    }
+
+    // https://html.spec.whatwg.org/multipage/#dom-context-2d-gettransform
+    pub fn get_transform(&self, global: &GlobalScope) -> DomRoot<DOMMatrix> {
+        let (sender, receiver) = ipc::channel::<Transform2D<f32>>().unwrap();
+        self.send_canvas_2d_msg(Canvas2dMsg::GetTransform(sender));
+        let transform = receiver.recv().unwrap();
+
+        DOMMatrix::new(global, true, transform.cast::<f64>().to_3d())
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-context-2d-settransform

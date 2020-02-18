@@ -4,7 +4,7 @@
 
 use crate::data_loader::decode;
 use crate::fetch::cors_cache::CorsCache;
-use crate::filemanager_thread::{fetch_file_in_chunks, FileManager, FILE_CHUNK_SIZE};
+use crate::filemanager_thread::{FileManager, FILE_CHUNK_SIZE};
 use crate::http_loader::{determine_request_referrer, http_fetch, HttpState};
 use crate::http_loader::{set_default_accept, set_default_accept_language};
 use crate::subresource_integrity::is_response_integrity_valid;
@@ -279,14 +279,7 @@ pub fn main_fetch(
             false
         };
 
-        if (same_origin && !cors_flag ) ||
-            current_url.scheme() == "data" ||
-            current_url.scheme() == "file" || // FIXME: Fetch spec has already dropped filtering against file:
-                                              //        and about: schemes, but CSS tests will break on loading Ahem
-                                              //        since we load them through a file: URL.
-            current_url.scheme() == "about" ||
-            request.mode == RequestMode::Navigate
-        {
+        if (same_origin && !cors_flag) || current_url.scheme() == "data" {
             // Substep 1.
             request.response_tainting = ResponseTainting::Basic;
 
@@ -347,15 +340,16 @@ pub fn main_fetch(
                 .map(|v| v.iter().collect());
             match header_names {
                 // Subsubstep 2.
-                Some(ref list) if request.credentials_mode != CredentialsMode::Include => {
-                    if list.len() == 1 && list[0] == "*" {
-                        response.cors_exposed_header_name_list = response
-                            .headers
-                            .iter()
-                            .map(|(name, _)| name.as_str().to_owned())
-                            .collect();
-                    }
-                },
+                Some(ref list)
+                    if request.credentials_mode != CredentialsMode::Include &&
+                        list.iter().any(|header| header == "*") =>
+                {
+                    response.cors_exposed_header_name_list = response
+                        .headers
+                        .iter()
+                        .map(|(name, _)| name.as_str().to_owned())
+                        .collect();
+                }
                 // Subsubstep 3.
                 Some(list) => {
                     response.cors_exposed_header_name_list =
@@ -708,7 +702,7 @@ fn scheme_fetch(
                     *done_chan = Some((done_sender.clone(), done_receiver));
                     *response.body.lock().unwrap() = ResponseBody::Receiving(vec![]);
 
-                    fetch_file_in_chunks(
+                    context.filemanager.fetch_file_in_chunks(
                         done_sender,
                         reader,
                         response.body.clone(),

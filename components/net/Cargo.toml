@@ -6,6 +6,7 @@ license = "MPL-2.0"
 edition = "2018"
 publish = false
 autotests = false  # Inhibit lookup for tests/*.rs without [[test]] sections
+build = "build.rs"
 
 [lib]
 name = "net"
@@ -37,12 +38,12 @@ libflate = "0.1"
 log = "0.4"
 malloc_size_of = { path = "../malloc_size_of" }
 malloc_size_of_derive = "0.1"
-matches = "0.1"
 mime = "0.3"
 mime_guess = "2.0.0-alpha.6"
 msg = {path = "../msg"}
 net_traits = {path = "../net_traits"}
 openssl = "0.10"
+openssl-sys = "0.9"
 percent-encoding = "2.0"
 pixels = {path = "../pixels"}
 profile_traits = {path = "../profile_traits"}

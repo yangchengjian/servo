@@ -152,7 +152,7 @@ impl HTMLAnchorElementMethods for HTMLAnchorElement {
     make_getter!(Name, "name");
 
     // https://html.spec.whatwg.org/multipage/#dom-a-name
-    make_setter!(SetName, "name");
+    make_atomic_setter!(SetName, "name");
 
     // https://html.spec.whatwg.org/multipage/#dom-a-rev
     make_getter!(Rev, "rev");
@@ -541,13 +541,6 @@ impl Activatable for HTMLAnchorElement {
         // "The activation behaviour of a elements *that create hyperlinks*"
         self.as_element().has_attribute(&local_name!("href"))
     }
-
-    //TODO:https://html.spec.whatwg.org/multipage/#the-a-element
-    fn pre_click_activation(&self) {}
-
-    //TODO:https://html.spec.whatwg.org/multipage/#the-a-element
-    // https://html.spec.whatwg.org/multipage/#run-canceled-activation-steps
-    fn canceled_activation(&self) {}
 
     //https://html.spec.whatwg.org/multipage/#the-a-element:activation-behaviour
     fn activation_behavior(&self, event: &Event, target: &EventTarget) {

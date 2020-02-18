@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use crate::dom::activation::{synthetic_click_activation, ActivationSource};
 use crate::dom::attr::Attr;
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull;
+use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::OnErrorEventHandlerNonNull;
 use crate::dom::bindings::codegen::Bindings::HTMLElementBinding;
 use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLLabelElementBinding::HTMLLabelElementMethods;
@@ -181,6 +181,35 @@ impl HTMLElementMethods for HTMLElement {
         self.dataset.or_init(|| DOMStringMap::new(self))
     }
 
+    // https://html.spec.whatwg.org/multipage/#handler-onerror
+    fn GetOnerror(&self) -> Option<Rc<OnErrorEventHandlerNonNull>> {
+        if self.is_body_or_frameset() {
+            let document = document_from_node(self);
+            if document.has_browsing_context() {
+                document.window().GetOnerror()
+            } else {
+                None
+            }
+        } else {
+            self.upcast::<EventTarget>()
+                .get_event_handler_common("error")
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/#handler-onerror
+    fn SetOnerror(&self, listener: Option<Rc<OnErrorEventHandlerNonNull>>) {
+        if self.is_body_or_frameset() {
+            let document = document_from_node(self);
+            if document.has_browsing_context() {
+                document.window().SetOnerror(listener)
+            }
+        } else {
+            // special setter for error
+            self.upcast::<EventTarget>()
+                .set_error_event_handler("error", listener)
+        }
+    }
+
     // https://html.spec.whatwg.org/multipage/#handler-onload
     fn GetOnload(&self) -> Option<Rc<EventHandlerNonNull>> {
         if self.is_body_or_frameset() {
@@ -206,34 +235,6 @@ impl HTMLElementMethods for HTMLElement {
         } else {
             self.upcast::<EventTarget>()
                 .set_event_handler_common("load", listener)
-        }
-    }
-
-    // https://html.spec.whatwg.org/multipage/#handler-onresize
-    fn GetOnresize(&self) -> Option<Rc<EventHandlerNonNull>> {
-        if self.is_body_or_frameset() {
-            let document = document_from_node(self);
-            if document.has_browsing_context() {
-                document.window().GetOnload()
-            } else {
-                None
-            }
-        } else {
-            self.upcast::<EventTarget>()
-                .get_event_handler_common("resize")
-        }
-    }
-
-    // https://html.spec.whatwg.org/multipage/#handler-onresize
-    fn SetOnresize(&self, listener: Option<Rc<EventHandlerNonNull>>) {
-        if self.is_body_or_frameset() {
-            let document = document_from_node(self);
-            if document.has_browsing_context() {
-                document.window().SetOnresize(listener);
-            }
-        } else {
-            self.upcast::<EventTarget>()
-                .set_event_handler_common("resize", listener)
         }
     }
 
@@ -290,6 +291,34 @@ impl HTMLElementMethods for HTMLElement {
         } else {
             self.upcast::<EventTarget>()
                 .set_event_handler_common("focus", listener)
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/#handler-onresize
+    fn GetOnresize(&self) -> Option<Rc<EventHandlerNonNull>> {
+        if self.is_body_or_frameset() {
+            let document = document_from_node(self);
+            if document.has_browsing_context() {
+                document.window().GetOnresize()
+            } else {
+                None
+            }
+        } else {
+            self.upcast::<EventTarget>()
+                .get_event_handler_common("resize")
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/#handler-onresize
+    fn SetOnresize(&self, listener: Option<Rc<EventHandlerNonNull>>) {
+        if self.is_body_or_frameset() {
+            let document = document_from_node(self);
+            if document.has_browsing_context() {
+                document.window().SetOnresize(listener)
+            }
+        } else {
+            self.upcast::<EventTarget>()
+                .set_event_handler_common("resize", listener)
         }
     }
 
@@ -359,16 +388,18 @@ impl HTMLElementMethods for HTMLElement {
 
     // https://html.spec.whatwg.org/multipage/#dom-click
     fn Click(&self) {
-        if !self.upcast::<Element>().disabled_state() {
-            synthetic_click_activation(
-                self.upcast::<Element>(),
-                false,
-                false,
-                false,
-                false,
-                ActivationSource::FromClick,
-            )
+        let element = self.upcast::<Element>();
+        if element.disabled_state() {
+            return;
         }
+        if element.click_in_progress() {
+            return;
+        }
+        element.set_click_in_progress(true);
+
+        self.upcast::<Node>()
+            .fire_synthetic_mouse_event_not_trusted(DOMString::from("click"));
+        element.set_click_in_progress(false);
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-focus
@@ -515,6 +546,23 @@ impl HTMLElementMethods for HTMLElement {
 
         // Step 7.
         Node::replace_all(Some(fragment.upcast()), self.upcast::<Node>());
+    }
+
+    // https://html.spec.whatwg.org/multipage/#dom-translate
+    fn Translate(&self) -> bool {
+        self.upcast::<Element>().is_translate_enabled()
+    }
+
+    // https://html.spec.whatwg.org/multipage/#dom-translate
+    fn SetTranslate(&self, yesno: bool) {
+        self.upcast::<Element>().set_string_attribute(
+            // TODO change this to local_name! when html5ever updates
+            &LocalName::from("translate"),
+            match yesno {
+                true => DOMString::from("yes"),
+                false => DOMString::from("no"),
+            },
+        );
     }
 }
 

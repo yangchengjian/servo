@@ -7,8 +7,9 @@
  */
 
 dictionary PerformanceObserverInit {
-  required sequence<DOMString> entryTypes;
-  boolean buffered = false;
+  sequence<DOMString> entryTypes;
+  DOMString type;
+  boolean buffered;
 };
 
 callback PerformanceObserverCallback = void (PerformanceObserverEntryList entries, PerformanceObserver observer);
@@ -17,6 +18,9 @@ callback PerformanceObserverCallback = void (PerformanceObserverEntryList entrie
 interface PerformanceObserver {
   [Throws] constructor(PerformanceObserverCallback callback);
   [Throws]
-  void observe(PerformanceObserverInit options);
+  void observe(optional PerformanceObserverInit options = {});
   void disconnect();
+  PerformanceEntryList takeRecords();
+  // codegen doesn't like SameObject+static and doesn't know FrozenArray
+  /*[SameObject]*/ static readonly attribute /*FrozenArray<DOMString>*/ any supportedEntryTypes;
 };

@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 #[derive(Debug, Deserialize, Serialize)]
 pub enum WebGPUResponse {
     RequestAdapter(String, WebGPUAdapter, WebGPU),
-    RequestDevice(WebGPUDevice, wgpu::instance::DeviceDescriptor),
+    RequestDevice(WebGPUDevice, WebGPUQueue, wgpu::instance::DeviceDescriptor),
 }
 
 pub type WebGPUResponseResult = Result<WebGPUResponse, String>;
@@ -59,14 +59,50 @@ pub enum WebGPURequest {
         wgpu::id::BindGroupLayoutId,
         Vec<wgpu::binding_model::BindGroupLayoutBinding>,
     ),
+    CreateComputePipeline(
+        IpcSender<WebGPUComputePipeline>,
+        WebGPUDevice,
+        wgpu::id::ComputePipelineId,
+        wgpu::id::PipelineLayoutId,
+        wgpu::id::ShaderModuleId,
+        String,
+    ),
     CreatePipelineLayout(
         IpcSender<WebGPUPipelineLayout>,
         WebGPUDevice,
         wgpu::id::PipelineLayoutId,
         Vec<wgpu::id::BindGroupLayoutId>,
     ),
+    CreateShaderModule(
+        IpcSender<WebGPUShaderModule>,
+        WebGPUDevice,
+        wgpu::id::ShaderModuleId,
+        Vec<u32>,
+    ),
     UnmapBuffer(WebGPUBuffer),
     DestroyBuffer(WebGPUBuffer),
+    CreateCommandEncoder(
+        IpcSender<WebGPUCommandEncoder>,
+        WebGPUDevice,
+        // TODO(zakorgy): Serialize CommandEncoderDescriptor in wgpu-core
+        // wgpu::command::CommandEncoderDescriptor,
+        wgpu::id::CommandEncoderId,
+    ),
+    CopyBufferToBuffer(
+        wgpu::id::CommandEncoderId,
+        wgpu::id::BufferId,
+        wgpu::BufferAddress,
+        wgpu::id::BufferId,
+        wgpu::BufferAddress,
+        wgpu::BufferAddress,
+    ),
+    CommandEncoderFinish(
+        IpcSender<WebGPUCommandBuffer>,
+        wgpu::id::CommandEncoderId,
+        // TODO(zakorgy): Serialize CommandBufferDescriptor in wgpu-core
+        // wgpu::command::CommandBufferDescriptor,
+    ),
+    Submit(wgpu::id::QueueId, Vec<wgpu::id::CommandBufferId>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -187,9 +223,12 @@ impl WGPU {
                         id
                     ));
                     let device = WebGPUDevice(id);
+                    // Note: (zakorgy) Note sure if sending the queue is needed at all,
+                    // since wgpu-core uses the same id for the device and the queue
+                    let queue = WebGPUQueue(id);
                     self.devices.push(device);
                     if let Err(e) =
-                        sender.send(Ok(WebGPUResponse::RequestDevice(device, descriptor)))
+                        sender.send(Ok(WebGPUResponse::RequestDevice(device, queue, descriptor)))
                     {
                         warn!(
                             "Failed to send response to WebGPURequest::RequestDevice ({})",
@@ -286,6 +325,99 @@ impl WGPU {
                         )
                     }
                 },
+                WebGPURequest::CreateShaderModule(sender, device, id, program) => {
+                    let global = &self.global;
+                    let descriptor = wgpu_core::pipeline::ShaderModuleDescriptor {
+                        code: wgpu_core::U32Array {
+                            bytes: program.as_ptr(),
+                            length: program.len(),
+                        },
+                    };
+                    let sm_id = gfx_select!(id => global.device_create_shader_module(device.0, &descriptor, id));
+                    let shader_module = WebGPUShaderModule(sm_id);
+
+                    if let Err(e) = sender.send(shader_module) {
+                        warn!(
+                            "Failed to send response to WebGPURequest::CreateShaderModule ({})",
+                            e
+                        )
+                    }
+                },
+                WebGPURequest::CreateComputePipeline(
+                    sender,
+                    device,
+                    id,
+                    layout,
+                    program,
+                    entry,
+                ) => {
+                    let global = &self.global;
+                    let entry_point = std::ffi::CString::new(entry).unwrap();
+                    let descriptor = wgpu_core::pipeline::ComputePipelineDescriptor {
+                        layout,
+                        compute_stage: wgpu_core::pipeline::ProgrammableStageDescriptor {
+                            module: program,
+                            entry_point: entry_point.as_ptr(),
+                        },
+                    };
+                    let cp_id = gfx_select!(id => global.device_create_compute_pipeline(device.0, &descriptor, id));
+                    let compute_pipeline = WebGPUComputePipeline(cp_id);
+
+                    if let Err(e) = sender.send(compute_pipeline) {
+                        warn!(
+                            "Failed to send response to WebGPURequest::CreateComputePipeline ({})",
+                            e
+                        )
+                    }
+                },
+                WebGPURequest::CreateCommandEncoder(sender, device, id) => {
+                    let global = &self.global;
+                    let id = gfx_select!(id => global.device_create_command_encoder(device.0, &Default::default(), id));
+                    if let Err(e) = sender.send(WebGPUCommandEncoder(id)) {
+                        warn!(
+                            "Failed to send response to WebGPURequest::CreateCommandEncoder ({})",
+                            e
+                        )
+                    }
+                },
+                WebGPURequest::CopyBufferToBuffer(
+                    command_encoder_id,
+                    source,
+                    source_offset,
+                    destination,
+                    destination_offset,
+                    size,
+                ) => {
+                    let global = &self.global;
+                    let _ = gfx_select!(command_encoder_id => global.command_encoder_copy_buffer_to_buffer(
+                        command_encoder_id,
+                        source,
+                        source_offset,
+                        destination,
+                        destination_offset,
+                        size
+                    ));
+                },
+                WebGPURequest::CommandEncoderFinish(sender, command_encoder_id) => {
+                    let global = &self.global;
+                    let command_buffer_id = gfx_select!(command_encoder_id => global.command_encoder_finish(
+                        command_encoder_id,
+                        &wgpu::command::CommandBufferDescriptor::default()
+                    ));
+                    if let Err(e) = sender.send(WebGPUCommandBuffer(command_buffer_id)) {
+                        warn!(
+                            "Failed to send response to WebGPURequest::CommandEncoderFinish ({})",
+                            e
+                        )
+                    }
+                },
+                WebGPURequest::Submit(queue_id, command_buffer_ids) => {
+                    let global = &self.global;
+                    let _ = gfx_select!(queue_id => global.queue_submit(
+                        queue_id,
+                        &command_buffer_ids
+                    ));
+                },
                 WebGPURequest::Exit(sender) => {
                     self.deinit();
                     if let Err(e) = sender.send(()) {
@@ -318,4 +450,9 @@ webgpu_resource!(WebGPUDevice, wgpu::id::DeviceId);
 webgpu_resource!(WebGPUBuffer, wgpu::id::BufferId);
 webgpu_resource!(WebGPUBindGroup, wgpu::id::BindGroupId);
 webgpu_resource!(WebGPUBindGroupLayout, wgpu::id::BindGroupLayoutId);
+webgpu_resource!(WebGPUComputePipeline, wgpu::id::ComputePipelineId);
 webgpu_resource!(WebGPUPipelineLayout, wgpu::id::PipelineLayoutId);
+webgpu_resource!(WebGPUShaderModule, wgpu::id::ShaderModuleId);
+webgpu_resource!(WebGPUCommandEncoder, wgpu::id::CommandEncoderId);
+webgpu_resource!(WebGPUCommandBuffer, wgpu::id::CommandBufferId);
+webgpu_resource!(WebGPUQueue, wgpu::id::QueueId);

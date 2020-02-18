@@ -11,18 +11,28 @@ use crate::dom::bindings::codegen::Bindings::GPUBindGroupLayoutBinding::{
     GPUBindGroupLayoutBindings, GPUBindGroupLayoutDescriptor, GPUBindingType,
 };
 use crate::dom::bindings::codegen::Bindings::GPUBufferBinding::GPUBufferDescriptor;
-use crate::dom::bindings::codegen::Bindings::GPUDeviceBinding::{self, GPUDeviceMethods};
+use crate::dom::bindings::codegen::Bindings::GPUComputePipelineBinding::GPUComputePipelineDescriptor;
+use crate::dom::bindings::codegen::Bindings::GPUDeviceBinding::{
+    self, GPUCommandEncoderDescriptor, GPUDeviceMethods,
+};
 use crate::dom::bindings::codegen::Bindings::GPUPipelineLayoutBinding::GPUPipelineLayoutDescriptor;
+use crate::dom::bindings::codegen::Bindings::GPUShaderModuleBinding::GPUShaderModuleDescriptor;
+use crate::dom::bindings::codegen::UnionTypes::Uint32ArrayOrString::{String, Uint32Array};
 use crate::dom::bindings::reflector::{reflect_dom_object, DomObject};
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::gpuadapter::GPUAdapter;
 use crate::dom::gpubindgroup::GPUBindGroup;
 use crate::dom::gpubindgrouplayout::GPUBindGroupLayout;
 use crate::dom::gpubuffer::{GPUBuffer, GPUBufferState};
+use crate::dom::gpucommandencoder::GPUCommandEncoder;
+use crate::dom::gpucomputepipeline::GPUComputePipeline;
 use crate::dom::gpupipelinelayout::GPUPipelineLayout;
+use crate::dom::gpuqueue::GPUQueue;
+use crate::dom::gpushadermodule::GPUShaderModule;
 use crate::script_runtime::JSContext as SafeJSContext;
 use dom_struct::dom_struct;
 use ipc_channel::ipc;
@@ -36,7 +46,7 @@ use webgpu::wgpu::binding_model::{
     ShaderStage,
 };
 use webgpu::wgpu::resource::{BufferDescriptor, BufferUsage};
-use webgpu::{WebGPU, WebGPUBuffer, WebGPUDevice, WebGPURequest};
+use webgpu::{WebGPU, WebGPUBuffer, WebGPUDevice, WebGPUQueue, WebGPURequest};
 
 #[dom_struct]
 pub struct GPUDevice {
@@ -50,6 +60,7 @@ pub struct GPUDevice {
     limits: Heap<*mut JSObject>,
     label: DomRefCell<Option<DOMString>>,
     device: WebGPUDevice,
+    default_queue: Dom<GPUQueue>,
 }
 
 impl GPUDevice {
@@ -59,6 +70,7 @@ impl GPUDevice {
         extensions: Heap<*mut JSObject>,
         limits: Heap<*mut JSObject>,
         device: WebGPUDevice,
+        queue: &GPUQueue,
     ) -> GPUDevice {
         Self {
             eventtarget: EventTarget::new_inherited(),
@@ -68,6 +80,7 @@ impl GPUDevice {
             limits,
             label: DomRefCell::new(None),
             device,
+            default_queue: Dom::from_ref(queue),
         }
     }
 
@@ -79,10 +92,12 @@ impl GPUDevice {
         extensions: Heap<*mut JSObject>,
         limits: Heap<*mut JSObject>,
         device: WebGPUDevice,
+        queue: WebGPUQueue,
     ) -> DomRoot<GPUDevice> {
+        let queue = GPUQueue::new(global, channel.clone(), queue);
         reflect_dom_object(
             Box::new(GPUDevice::new_inherited(
-                channel, adapter, extensions, limits, device,
+                channel, adapter, extensions, limits, device, &queue,
             )),
             global,
             GPUDeviceBinding::Wrap,
@@ -165,6 +180,11 @@ impl GPUDeviceMethods for GPUDevice {
     /// https://gpuweb.github.io/gpuweb/#dom-gpudevice-limits
     fn Limits(&self, _cx: SafeJSContext) -> NonNull<JSObject> {
         NonNull::new(self.extensions.get()).unwrap()
+    }
+
+    /// https://gpuweb.github.io/gpuweb/#dom-gpudevice-defaultqueue
+    fn DefaultQueue(&self) -> DomRoot<GPUQueue> {
+        DomRoot::from_ref(&self.default_queue)
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label
@@ -523,9 +543,81 @@ impl GPUDeviceMethods for GPUDevice {
                 descriptor.layout.id(),
                 bindings,
             ))
-            .expect("Failed to create WebGPU PipelineLayout");
+            .expect("Failed to create WebGPU BindGroup");
 
         let bind_group = receiver.recv().unwrap();
         GPUBindGroup::new(&self.global(), bind_group, valid)
+    }
+
+    /// https://gpuweb.github.io/gpuweb/#dom-gpudevice-createshadermodule
+    fn CreateShaderModule(
+        &self,
+        descriptor: RootedTraceableBox<GPUShaderModuleDescriptor>,
+    ) -> DomRoot<GPUShaderModule> {
+        let (sender, receiver) = ipc::channel().unwrap();
+        let program: Vec<u32> = match &descriptor.code {
+            Uint32Array(program) => program.to_vec(),
+            String(program) => program.chars().map(|c| c as u32).collect::<Vec<u32>>(),
+        };
+        let id = self
+            .global()
+            .wgpu_create_shader_module_id(self.device.0.backend());
+        self.channel
+            .0
+            .send(WebGPURequest::CreateShaderModule(
+                sender,
+                self.device,
+                id,
+                program,
+            ))
+            .expect("Failed to create WebGPU ShaderModule");
+
+        let shader_module = receiver.recv().unwrap();
+        GPUShaderModule::new(&self.global(), shader_module)
+    }
+
+    /// https://gpuweb.github.io/gpuweb/#dom-gpudevice-createcomputepipeline
+    fn CreateComputePipeline(
+        &self,
+        descriptor: &GPUComputePipelineDescriptor,
+    ) -> DomRoot<GPUComputePipeline> {
+        let pipeline = descriptor.parent.layout.id();
+        let program = descriptor.computeStage.module.id();
+        let entry_point = descriptor.computeStage.entryPoint.to_string();
+        let id = self
+            .global()
+            .wgpu_create_compute_pipeline_id(self.device.0.backend());
+        let (sender, receiver) = ipc::channel().unwrap();
+        self.channel
+            .0
+            .send(WebGPURequest::CreateComputePipeline(
+                sender,
+                self.device,
+                id,
+                pipeline.0,
+                program.0,
+                entry_point,
+            ))
+            .expect("Failed to create WebGPU ComputePipeline");
+
+        let compute_pipeline = receiver.recv().unwrap();
+        GPUComputePipeline::new(&self.global(), compute_pipeline)
+    }
+    /// https://gpuweb.github.io/gpuweb/#dom-gpudevice-createcommandencoder
+    fn CreateCommandEncoder(
+        &self,
+        _descriptor: &GPUCommandEncoderDescriptor,
+    ) -> DomRoot<GPUCommandEncoder> {
+        let (sender, receiver) = ipc::channel().unwrap();
+        let id = self
+            .global()
+            .wgpu_create_command_encoder_id(self.device.0.backend());
+        self.channel
+            .0
+            .send(WebGPURequest::CreateCommandEncoder(sender, self.device, id))
+            .expect("Failed to create WebGPU command encoder");
+        let encoder = receiver.recv().unwrap();
+
+        GPUCommandEncoder::new(&self.global(), self.channel.clone(), encoder)
     }
 }

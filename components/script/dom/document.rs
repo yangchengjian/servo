@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use crate::document_loader::{DocumentLoader, LoadType};
-use crate::dom::activation::{synthetic_click_activation, ActivationSource};
 use crate::dom::attr::Attr;
 use crate::dom::beforeunloadevent::BeforeUnloadEvent;
 use crate::dom::bindings::callback::ExceptionHandling;
@@ -80,6 +79,7 @@ use crate::dom::pagetransitionevent::PageTransitionEvent;
 use crate::dom::processinginstruction::ProcessingInstruction;
 use crate::dom::promise::Promise;
 use crate::dom::range::Range;
+use crate::dom::selection::Selection;
 use crate::dom::servoparser::ServoParser;
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::storageevent::StorageEvent;
@@ -146,6 +146,7 @@ use servo_media::{ClientContextId, ServoMedia};
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::default::Default;
@@ -243,6 +244,7 @@ pub struct Document {
     quirks_mode: Cell<QuirksMode>,
     /// Caches for the getElement methods
     id_map: DomRefCell<HashMap<Atom, Vec<Dom<Element>>>>,
+    name_map: DomRefCell<HashMap<Atom, Vec<Dom<Element>>>>,
     tag_map: DomRefCell<HashMap<LocalName, Dom<HTMLCollection>>>,
     tagns_map: DomRefCell<HashMap<QualName, Dom<HTMLCollection>>>,
     classes_map: DomRefCell<HashMap<Vec<Atom>, Dom<HTMLCollection>>>,
@@ -399,6 +401,8 @@ pub struct Document {
     /// https://html.spec.whatwg.org/multipage/#concept-document-csp-list
     #[ignore_malloc_size_of = "Defined in rust-content-security-policy"]
     csp_list: DomRefCell<Option<CspList>>,
+    /// https://w3c.github.io/slection-api/#dfn-selection
+    selection: MutNullableDom<Selection>,
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -448,6 +452,12 @@ impl CollectionFilter for AnchorsFilter {
     fn filter(&self, elem: &Element, _root: &Node) -> bool {
         elem.is::<HTMLAnchorElement>() && elem.has_attribute(&local_name!("href"))
     }
+}
+
+enum ElementLookupResult {
+    None,
+    One(DomRoot<Element>),
+    Many,
 }
 
 #[allow(non_snake_case)]
@@ -557,8 +567,7 @@ impl Document {
                     let event = event.upcast::<Event>();
                     event.set_trusted(true);
                     // FIXME(nox): Why are errors silenced here?
-                    let _ = window.upcast::<EventTarget>().dispatch_event_with_target(
-                        document.upcast(),
+                    let _ = window.dispatch_event_with_target_override(
                         &event,
                     );
                 }),
@@ -709,14 +718,14 @@ impl Document {
     }
 
     /// Remove any existing association between the provided id and any elements in this document.
-    pub fn unregister_named_element(&self, to_unregister: &Element, id: Atom) {
+    pub fn unregister_element_id(&self, to_unregister: &Element, id: Atom) {
         self.document_or_shadow_root
             .unregister_named_element(&self.id_map, to_unregister, &id);
         self.reset_form_owner_for_listeners(&id);
     }
 
     /// Associate an element present in this document with the provided id.
-    pub fn register_named_element(&self, element: &Element, id: Atom) {
+    pub fn register_element_id(&self, element: &Element, id: Atom) {
         let root = self.GetDocumentElement().expect(
             "The element is in the document, so there must be a document \
              element.",
@@ -728,6 +737,26 @@ impl Document {
             DomRoot::from_ref(root.upcast::<Node>()),
         );
         self.reset_form_owner_for_listeners(&id);
+    }
+
+    /// Remove any existing association between the provided name and any elements in this document.
+    pub fn unregister_element_name(&self, to_unregister: &Element, name: Atom) {
+        self.document_or_shadow_root
+            .unregister_named_element(&self.name_map, to_unregister, &name);
+    }
+
+    /// Associate an element present in this document with the provided name.
+    pub fn register_element_name(&self, element: &Element, name: Atom) {
+        let root = self.GetDocumentElement().expect(
+            "The element is in the document, so there must be a document \
+             element.",
+        );
+        self.document_or_shadow_root.register_named_element(
+            &self.name_map,
+            element,
+            &name,
+            DomRoot::from_ref(root.upcast::<Node>()),
+        );
     }
 
     pub fn register_form_id_listener<T: ?Sized + FormControl>(&self, id: DOMString, listener: &T) {
@@ -823,17 +852,13 @@ impl Document {
     }
 
     fn get_anchor_by_name(&self, name: &str) -> Option<DomRoot<Element>> {
-        let check_anchor = |node: &HTMLAnchorElement| {
-            let elem = node.upcast::<Element>();
-            elem.get_attribute(&ns!(), &local_name!("name"))
-                .map_or(false, |attr| &**attr.value() == name)
-        };
-        let doc_node = self.upcast::<Node>();
-        doc_node
-            .traverse_preorder(ShadowIncluding::No)
-            .filter_map(DomRoot::downcast)
-            .find(|node| check_anchor(&node))
-            .map(DomRoot::upcast)
+        let name = Atom::from(name);
+        self.name_map.borrow().get(&name).and_then(|elements| {
+            elements
+                .iter()
+                .find(|e| e.is::<HTMLAnchorElement>())
+                .map(|e| DomRoot::from_ref(&**e))
+        })
     }
 
     // https://html.spec.whatwg.org/multipage/#current-document-readiness
@@ -1015,7 +1040,11 @@ impl Document {
         // https://html.spec.whatwg.org/multipage/#run-authentic-click-activation-steps
         let activatable = el.as_maybe_activatable();
         match mouse_event_type {
-            MouseEventType::Click => el.authentic_click_activation(event),
+            MouseEventType::Click => {
+                el.set_click_in_progress(true);
+                event.fire(node.upcast());
+                el.set_click_in_progress(false);
+            },
             MouseEventType::MouseDown => {
                 if let Some(a) = activatable {
                     a.enter_formal_activation_state();
@@ -1477,16 +1506,9 @@ impl Document {
             if (keyboard_event.key == Key::Enter || keyboard_event.code == Code::Space) &&
                 keyboard_event.state == KeyState::Up
             {
-                let maybe_elem = target.downcast::<Element>();
-                if let Some(el) = maybe_elem {
-                    synthetic_click_activation(
-                        el,
-                        false,
-                        false,
-                        false,
-                        false,
-                        ActivationSource::NotFromClick,
-                    )
+                if let Some(elem) = target.downcast::<Element>() {
+                    elem.upcast::<Node>()
+                        .fire_synthetic_mouse_event_not_trusted(DOMString::from("click"));
                 }
             }
         }
@@ -1802,7 +1824,6 @@ impl Document {
         // Step 2
         self.incr_ignore_opens_during_unload_counter();
         //Step 3-5.
-        let document = Trusted::new(self);
         let beforeunload_event = BeforeUnloadEvent::new(
             &self.window,
             atom!("beforeunload"),
@@ -1813,7 +1834,7 @@ impl Document {
         event.set_trusted(true);
         let event_target = self.window.upcast::<EventTarget>();
         let has_listeners = event.has_listeners_for(&event_target, &atom!("beforeunload"));
-        event_target.dispatch_event_with_target(document.root().upcast(), &event);
+        self.window.dispatch_event_with_target_override(&event);
         // TODO: Step 6, decrease the event loop's termination nesting level by 1.
         // Step 7
         if has_listeners {
@@ -1857,7 +1878,6 @@ impl Document {
         // TODO: Step 1, increase the event loop's termination nesting level by 1.
         // Step 2
         self.incr_ignore_opens_during_unload_counter();
-        let document = Trusted::new(self);
         // Step 3-6
         if self.page_showing.get() {
             self.page_showing.set(false);
@@ -1870,10 +1890,7 @@ impl Document {
             );
             let event = event.upcast::<Event>();
             event.set_trusted(true);
-            let _ = self
-                .window
-                .upcast::<EventTarget>()
-                .dispatch_event_with_target(document.root().upcast(), &event);
+            let _ = self.window.dispatch_event_with_target_override(&event);
             // TODO Step 6, document visibility steps.
         }
         // Step 7
@@ -1887,7 +1904,7 @@ impl Document {
             event.set_trusted(true);
             let event_target = self.window.upcast::<EventTarget>();
             let has_listeners = event.has_listeners_for(&event_target, &atom!("unload"));
-            let _ = event_target.dispatch_event_with_target(document.root().upcast(), &event);
+            let _ = self.window.dispatch_event_with_target_override(&event);
             self.fired_unload.set(true);
             // Step 9
             if has_listeners {
@@ -1983,8 +2000,7 @@ impl Document {
 
                     debug!("About to dispatch load for {:?}", document.url());
                     // FIXME(nox): Why are errors silenced here?
-                    let _ = window.upcast::<EventTarget>().dispatch_event_with_target(
-                        document.upcast(),
+                    let _ = window.dispatch_event_with_target_override(
                         &event,
                     );
 
@@ -2028,8 +2044,7 @@ impl Document {
                         event.set_trusted(true);
 
                         // FIXME(nox): Why are errors silenced here?
-                        let _ = window.upcast::<EventTarget>().dispatch_event_with_target(
-                            document.upcast(),
+                        let _ = window.dispatch_event_with_target_override(
                             &event,
                         );
                     }),
@@ -2523,6 +2538,75 @@ impl Document {
             .unwrap();
         receiver.recv().unwrap();
     }
+
+    // https://html.spec.whatwg.org/multipage/#dom-tree-accessors:supported-property-names
+    // (This takes the filter as a method so the window named getter can use it too)
+    pub fn supported_property_names_impl(
+        &self,
+        nameditem_filter: fn(&Node, &Atom) -> bool,
+    ) -> Vec<DOMString> {
+        // The tricky part here is making sure we return the names in
+        // tree order, without just resorting to a full tree walkthrough.
+
+        let mut first_elements_with_name: HashMap<&Atom, &Dom<Element>> = HashMap::new();
+
+        // Get the first-in-tree-order element for each name in the name_map
+        let name_map = self.name_map.borrow();
+        name_map.iter().for_each(|(name, value)| {
+            if let Some(first) = value
+                .iter()
+                .find(|n| nameditem_filter((***n).upcast::<Node>(), &name))
+            {
+                first_elements_with_name.insert(name, first);
+            }
+        });
+
+        // Get the first-in-tree-order element for each name in the id_map;
+        // if we already had one from the name_map, figure out which of
+        // the two is first.
+        let id_map = self.id_map.borrow();
+        id_map.iter().for_each(|(name, value)| {
+            if let Some(first) = value
+                .iter()
+                .find(|n| nameditem_filter((***n).upcast::<Node>(), &name))
+            {
+                match first_elements_with_name.get(&name) {
+                    None => {
+                        first_elements_with_name.insert(name, first);
+                    },
+                    Some(el) => {
+                        if *el != first && first.upcast::<Node>().is_before(el.upcast::<Node>()) {
+                            first_elements_with_name.insert(name, first);
+                        }
+                    },
+                }
+            }
+        });
+
+        // first_elements_with_name now has our supported property names
+        // as keys, and the elements to order on as values.
+        let mut sortable_vec: Vec<(&Atom, &Dom<Element>)> = first_elements_with_name
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        sortable_vec.sort_unstable_by(|a, b| {
+            if a.1 == b.1 {
+                // This can happen if an img has an id different from its name,
+                // spec does not say which string to put first.
+                a.0.cmp(&b.0)
+            } else if a.1.upcast::<Node>().is_before(b.1.upcast::<Node>()) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
+
+        // And now that they're sorted, we can return the keys
+        sortable_vec
+            .iter()
+            .map(|(k, _v)| DOMString::from(&***k))
+            .collect()
+    }
 }
 
 fn is_character_value_key(key: &Key) -> bool {
@@ -2734,6 +2818,7 @@ impl Document {
             // https://dom.spec.whatwg.org/#concept-document-quirks
             quirks_mode: Cell::new(QuirksMode::NoQuirks),
             id_map: DomRefCell::new(HashMap::new()),
+            name_map: DomRefCell::new(HashMap::new()),
             // https://dom.spec.whatwg.org/#concept-document-encoding
             encoding: Cell::new(encoding),
             is_html_document: is_html_document == IsHTMLDocument::HTMLDocument,
@@ -2827,6 +2912,7 @@ impl Document {
             media_controls: DomRefCell::new(HashMap::new()),
             dirty_webgl_contexts: DomRefCell::new(HashMap::new()),
             csp_list: DomRefCell::new(None),
+            selection: MutNullableDom::new(None),
         }
     }
 
@@ -3395,6 +3481,81 @@ impl Document {
             s,
             StylesheetSetRef::Document(&mut *self.stylesheets.borrow_mut()),
         )
+    }
+
+    // https://html.spec.whatwg.org/multipage/#dom-tree-accessors:determine-the-value-of-a-named-property
+    // Support method for steps 1-3:
+    // Count if there are 0, 1, or >1 elements that match the name.
+    // (This takes the filter as a method so the window named getter can use it too)
+    fn look_up_named_elements(
+        &self,
+        name: &Atom,
+        nameditem_filter: fn(&Node, &Atom) -> bool,
+    ) -> ElementLookupResult {
+        // We might match because of either id==name or name==name, so there
+        // are two sets of nodes to look through, but we don't need a
+        // full tree traversal.
+        let id_map = self.id_map.borrow();
+        let name_map = self.name_map.borrow();
+        let id_vec = id_map.get(&name);
+        let name_vec = name_map.get(&name);
+
+        // If nothing can possibly have the name, exit fast
+        if id_vec.is_none() && name_vec.is_none() {
+            return ElementLookupResult::None;
+        }
+
+        let one_from_id_map = if let Some(id_vec) = id_vec {
+            let mut elements = id_vec
+                .iter()
+                .filter(|n| nameditem_filter((***n).upcast::<Node>(), &name))
+                .peekable();
+            if let Some(first) = elements.next() {
+                if elements.peek().is_none() {
+                    Some(first)
+                } else {
+                    return ElementLookupResult::Many;
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let one_from_name_map = if let Some(name_vec) = name_vec {
+            let mut elements = name_vec
+                .iter()
+                .filter(|n| nameditem_filter((***n).upcast::<Node>(), &name))
+                .peekable();
+            if let Some(first) = elements.next() {
+                if elements.peek().is_none() {
+                    Some(first)
+                } else {
+                    return ElementLookupResult::Many;
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // We now have two elements, or one element, or the same
+        // element twice, or no elements.
+        match (one_from_id_map, one_from_name_map) {
+            (Some(one), None) | (None, Some(one)) => {
+                ElementLookupResult::One(DomRoot::from_ref(&one))
+            },
+            (Some(one), Some(other)) => {
+                if one == other {
+                    ElementLookupResult::One(DomRoot::from_ref(&one))
+                } else {
+                    ElementLookupResult::Many
+                }
+            },
+            (None, None) => ElementLookupResult::None,
+        }
     }
 }
 
@@ -4091,9 +4252,7 @@ impl DocumentMethods for Document {
             if element.namespace() != &ns!(html) {
                 return false;
             }
-            element
-                .get_attribute(&ns!(), &local_name!("name"))
-                .map_or(false, |attr| &**attr.value() == &*name)
+            element.get_name().map_or(false, |atom| *atom == *name)
         })
     }
 
@@ -4298,68 +4457,39 @@ impl DocumentMethods for Document {
         }
         impl CollectionFilter for NamedElementFilter {
             fn filter(&self, elem: &Element, _root: &Node) -> bool {
-                filter_by_name(&self.name, elem.upcast())
+                elem.upcast::<Node>().is_document_named_item(&self.name)
             }
         }
-        // https://html.spec.whatwg.org/multipage/#dom-document-nameditem-filter
-        fn filter_by_name(name: &Atom, node: &Node) -> bool {
-            let html_elem_type = match node.type_id() {
-                NodeTypeId::Element(ElementTypeId::HTMLElement(type_)) => type_,
-                _ => return false,
-            };
-            let elem = match node.downcast::<Element>() {
-                Some(elem) => elem,
-                None => return false,
-            };
-            match html_elem_type {
-                HTMLElementTypeId::HTMLFormElement => {
-                    match elem.get_attribute(&ns!(), &local_name!("name")) {
-                        Some(ref attr) => attr.value().as_atom() == name,
-                        None => false,
-                    }
-                },
-                HTMLElementTypeId::HTMLImageElement => {
-                    match elem.get_attribute(&ns!(), &local_name!("name")) {
-                        Some(ref attr) => {
-                            if attr.value().as_atom() == name {
-                                true
-                            } else {
-                                match elem.get_attribute(&ns!(), &local_name!("id")) {
-                                    Some(ref attr) => attr.value().as_atom() == name,
-                                    None => false,
-                                }
-                            }
-                        },
-                        None => false,
-                    }
-                },
-                // TODO: Handle <embed>, <iframe> and <object>.
-                _ => false,
-            }
-        }
+
         let name = Atom::from(name);
-        let root = self.upcast::<Node>();
-        unsafe {
-            // Step 1.
-            let mut elements = root
-                .traverse_preorder(ShadowIncluding::No)
-                .filter(|node| filter_by_name(&name, &node))
-                .peekable();
-            if let Some(first) = elements.next() {
-                if elements.peek().is_none() {
-                    // TODO: Step 2.
-                    // Step 3.
+
+        match self.look_up_named_elements(&name, Node::is_document_named_item) {
+            ElementLookupResult::None => {
+                return None;
+            },
+            ElementLookupResult::One(element) => {
+                if let Some(nested_proxy) = element
+                    .downcast::<HTMLIFrameElement>()
+                    .and_then(|iframe| iframe.GetContentWindow())
+                {
+                    unsafe {
+                        return Some(NonNull::new_unchecked(
+                            nested_proxy.reflector().get_jsobject().get(),
+                        ));
+                    }
+                }
+                unsafe {
                     return Some(NonNull::new_unchecked(
-                        first.reflector().get_jsobject().get(),
+                        element.reflector().get_jsobject().get(),
                     ));
                 }
-            } else {
-                return None;
-            }
-        }
+            },
+            ElementLookupResult::Many => {},
+        };
+
         // Step 4.
         let filter = NamedElementFilter { name: name };
-        let collection = HTMLCollection::create(self.window(), root, Box::new(filter));
+        let collection = HTMLCollection::create(self.window(), self.upcast(), Box::new(filter));
         unsafe {
             Some(NonNull::new_unchecked(
                 collection.reflector().get_jsobject().get(),
@@ -4369,8 +4499,7 @@ impl DocumentMethods for Document {
 
     // https://html.spec.whatwg.org/multipage/#dom-tree-accessors:supported-property-names
     fn SupportedPropertyNames(&self) -> Vec<DOMString> {
-        // FIXME: unimplemented (https://github.com/servo/servo/issues/7273)
-        vec![]
+        self.supported_property_names_impl(Node::is_document_named_item)
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-document-clear
@@ -4492,6 +4621,11 @@ impl DocumentMethods for Document {
         // Step 11
         // TODO: https://github.com/servo/servo/issues/21936
         Node::replace_all(None, self.upcast::<Node>());
+
+        // Specs and tests are in a state of flux about whether
+        // we want to clear the selection when we remove the contents;
+        // WPT selection/Document-open.html wants us to not clear it
+        // as of Feb 1 2020
 
         // Step 12
         if self.is_fully_active() {
@@ -4663,6 +4797,15 @@ impl DocumentMethods for Document {
         match self.media_controls.borrow().get(&*id) {
             Some(m) => Ok(DomRoot::from_ref(&*m)),
             None => Err(Error::InvalidAccess),
+        }
+    }
+
+    // https://w3c.github.io/selection-api/#dom-document-getselection
+    fn GetSelection(&self) -> Option<DomRoot<Selection>> {
+        if self.has_browsing_context {
+            Some(self.selection.or_init(|| Selection::new(self)))
+        } else {
+            None
         }
     }
 }

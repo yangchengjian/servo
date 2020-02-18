@@ -113,8 +113,8 @@ impl Into<SessionMode> for XRSessionMode {
 }
 
 impl XRMethods for XR {
-    /// https://immersive-web.github.io/webxr/#dom-xr-supportssessionmode
-    fn SupportsSession(&self, mode: XRSessionMode) -> Rc<Promise> {
+    /// https://immersive-web.github.io/webxr/#dom-xr-issessionsupported
+    fn IsSessionSupported(&self, mode: XRSessionMode) -> Rc<Promise> {
         // XXXManishearth this should select an XR device first
         let promise = Promise::new(&self.global());
         let mut trusted = Some(TrustedPromise::new(promise.clone()));
@@ -141,10 +141,11 @@ impl XRMethods for XR {
                     return;
                 };
                 if let Ok(()) = message {
-                    let _ = task_source.queue_with_canceller(trusted.resolve_task(()), &canceller);
+                    let _ =
+                        task_source.queue_with_canceller(trusted.resolve_task(true), &canceller);
                 } else {
-                    let _ = task_source
-                        .queue_with_canceller(trusted.reject_task(Error::NotSupported), &canceller);
+                    let _ =
+                        task_source.queue_with_canceller(trusted.resolve_task(false), &canceller);
                 };
             }),
         );
@@ -284,7 +285,6 @@ impl XR {
                 return;
             },
         };
-
         let session = XRSession::new(&self.global(), session, mode, frame_receiver);
         if mode == XRSessionMode::Inline {
             self.active_inline_sessions
@@ -294,6 +294,9 @@ impl XR {
             self.set_active_immersive_session(&session);
         }
         promise.resolve_native(&session);
+        // https://github.com/immersive-web/webxr/issues/961
+        // This must be called _after_ the promise is resolved
+        session.setup_initial_inputs();
     }
 
     pub fn get_displays(&self) -> Result<Vec<DomRoot<VRDisplay>>, ()> {

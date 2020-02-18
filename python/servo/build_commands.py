@@ -331,7 +331,7 @@ class MachCommands(CommandBase):
             android_arch = self.config["android"]["arch"]
 
             # Build OpenSSL for android
-            env["OPENSSL_VERSION"] = "1.0.2k"
+            env["OPENSSL_VERSION"] = "1.1.1d"
             make_cmd = ["make"]
             if jobs is not None:
                 make_cmd += ["-j" + jobs]
@@ -580,7 +580,7 @@ class MachCommands(CommandBase):
 
             # The Open SSL configuration
             env.setdefault("OPENSSL_DIR", path.join(target_path, target, "native", "openssl"))
-            env.setdefault("OPENSSL_VERSION", "1.0.2k")
+            env.setdefault("OPENSSL_VERSION", "1.1.1d")
             env.setdefault("OPENSSL_STATIC", "1")
 
             # GStreamer configuration
@@ -972,7 +972,7 @@ def package_msvc_dlls(servo_exe_dir, target, vcinstalldir, vs_version):
         if os.path.isdir(redist_dir):
             for p in os.listdir(redist_dir)[::-1]:
                 redist_path = path.join(redist_dir, p)
-                for v in ["VC141", "VC150", "VC160"]:
+                for v in ["VC141", "VC142", "VC150", "VC160"]:
                     # there are two possible paths
                     # `x64\Microsoft.VC*.CRT` or `onecore\x64\Microsoft.VC*.CRT`
                     redist1 = path.join(redist_path, vs_platform, "Microsoft.{}.CRT".format(v))
