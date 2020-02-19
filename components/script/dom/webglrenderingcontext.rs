@@ -145,6 +145,15 @@ bitflags! {
     }
 }
 
+#[allow(unsafe_code)]
+pub fn create_typed_array(cx: crate::script_runtime::JSContext, src: &[f32], dst: &::js::jsapi::Heap<*mut JSObject>) {
+    rooted!(in (*cx) let mut array = ptr::null_mut::<JSObject>());
+    unsafe {
+        let _ = Float32Array::create(*cx, CreateWith::Slice(src), array.handle_mut());
+    }
+    (*dst).set(array.get());
+}
+
 #[dom_struct]
 pub struct WebGLRenderingContext {
     reflector_: Reflector,
@@ -4252,6 +4261,51 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
         let p = Promise::new(&self.global());
         p.resolve_native(&());
         p
+    }
+
+
+    fn DrawBackground(&self) {
+        self.send_command(WebGLCommand::DrawBackground);
+    }
+
+//    fn ProjectViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
+//        self.send_command(WebGLCommand::ProjectViewMatrix(location.unwrap().id()));
+//    }
+//
+//    fn ProjectMatrix(&self, location: Option<&WebGLUniformLocation>) {
+//        self.send_command(WebGLCommand::ProjectMatrix(location.unwrap().id()));
+//    }
+//
+//    fn ViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
+//        self.send_command(WebGLCommand::ViewMatrix(location.unwrap().id()));
+//    }
+
+    #[allow(unsafe_code)]
+    fn GetProjectMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+
+        let (sender, receiver) = webgl_channel().unwrap();
+        self.send_command(WebGLCommand::GetProjectMatrix(sender));
+
+        let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
+        let result = receiver.recv().unwrap();
+
+        let cx = self.global().get_cx();
+        create_typed_array(cx, &result, &proj);
+        unsafe { NonNull::new_unchecked(proj.get()) }
+    }
+
+    #[allow(unsafe_code)]
+    fn GetViewMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+
+        let (sender, receiver) = webgl_channel().unwrap();
+        self.send_command(WebGLCommand::GetViewMatrix(sender));
+
+        let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
+        let result = receiver.recv().unwrap();
+
+        let cx = self.global().get_cx();
+        create_typed_array(cx, &result, &proj);
+        unsafe { NonNull::new_unchecked(proj.get()) }
     }
 }
 
