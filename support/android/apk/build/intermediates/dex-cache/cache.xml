@@ -11,5 +11,15 @@
         sha1="a2fe41ce867ceb4c698c5bbbdd771dea4b9db2a7">
         <dex dex="/Users/yangchengjian/HoldonBeginner/Sft/Github/servo/target/android/gradle/servoapp/intermediates/transforms/preDex/main/armv7Release/1.jar" />
     </item>
+    <item
+        is-multidex="false"
+        jar="/Users/yangchengjian/HoldonBeginner/Sft/Github/servo/target/android/gradle/servoapp/intermediates/transforms/desugar/main/armv7Release/5.jar"
+        jumboMode="false"
+        min-sdk-version="21"
+        optimize="true"
+        revision="27.0.3"
+        sha1="cc6d83a1bdff469f10841ebe702d52265bd78ce6">
+        <dex dex="/Users/yangchengjian/HoldonBeginner/Sft/Github/servo/target/android/gradle/servoapp/intermediates/transforms/preDex/main/armv7Release/5.jar" />
+    </item>
 
 </items>

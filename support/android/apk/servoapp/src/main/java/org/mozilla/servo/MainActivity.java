@@ -11,6 +11,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.view.View;
@@ -26,6 +27,8 @@ import android.util.Log;
 import org.mozilla.servo.MediaSession;
 import org.mozilla.servoview.ServoView;
 import org.mozilla.servoview.Servo;
+
+import com.google.ar.core.ArCoreApk;
 
 import java.io.File;
 
@@ -48,6 +51,8 @@ public class MainActivity extends Activity implements Servo.Client {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        maybeEnableArButton();
 
         mServoView = findViewById(R.id.servoview);
         mBackButton = findViewById(R.id.backbutton);
@@ -265,5 +270,27 @@ public class MainActivity extends Activity implements Servo.Client {
 
         mMediaSession.setPositionState(duration, position, playbackRate);
         return;
+    }
+
+    void maybeEnableArButton() {
+        Button mArButton = new Button(this);
+        ArCoreApk.Availability availability = ArCoreApk.getInstance().checkAvailability(this);
+        if (availability.isTransient()) {
+            // Re-query at 5Hz while compatibility is checked in the background.
+            new Handler().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    maybeEnableArButton();
+                }
+            }, 200);
+        }
+        if (availability.isSupported()) {
+            mArButton.setVisibility(View.VISIBLE);
+            mArButton.setEnabled(true);
+            // indicator on the button.
+        } else { // Unsupported or unknown.
+            mArButton.setVisibility(View.INVISIBLE);
+            mArButton.setEnabled(false);
+        }
     }
 }
