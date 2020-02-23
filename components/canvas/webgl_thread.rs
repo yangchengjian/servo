@@ -286,8 +286,6 @@ impl WebGLThread {
                             gl::GlType::Gles => GlType::Gles,
                         };
 
-//                        &mut self.handle_webar_command(id, WebARCommand::OnDisplayChanged(0, 1080, 1920));
-
                         // FIXME(nox): Should probably be done by surfman.
                         if api_type != GlType::Gles {
                             // Points sprites are enabled by default in OpenGL 3.2 core
@@ -441,7 +439,7 @@ impl WebGLThread {
             &mut self.bound_context_id,
         ).expect("WebGLContext not found");
 
-        let mut arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+        let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
 
         match command {
             WebARCommand::OnDisplayChanged(display_rotation, width, height) => {
@@ -667,19 +665,14 @@ impl WebGLThread {
             texture_target,
         );
 
-        let mut arcore = ::arcore_jni::init_arcore();
-        let data = Self::make_current_if_needed(
-            &self.device,
-            id,
-            &self.contexts,
-            &mut self.bound_context_id,
-        ).expect("WebGLContext not found");
-        &arcore.on_display_changed(&data.gl, 0, 1080, 1920);
+        let arcore = ::arcore_jni::init_arcore();
 
         self.cached_context_info
             .insert(id, WebGLContextInfo { image_key, arcore });
 
-//        self.handle_webar_command(id, WebARCommand::OnDisplayChanged(0, 1080, 1920));
+        {
+            self.handle_webar_command(id, WebARCommand::OnDisplayChanged(0, 1080, 1920));
+        }
 
         Ok((id, limits))
     }
