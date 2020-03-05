@@ -216,6 +216,12 @@ public class MainActivity extends Activity implements Servo.Client {
     public void onResume() {
         mServoView.onResume();
         super.onResume();
+        // ARCore requires camera permissions to operate. If we did not yet obtain runtime
+        // permission on Android M and above, now is a good time to ask the user for it.
+        if (!CameraPermissionHelper.hasCameraPermission(this)) {
+            CameraPermissionHelper.requestCameraPermission(this);
+            return;
+        }
     }
 
     @Override

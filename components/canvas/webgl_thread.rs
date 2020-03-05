@@ -17,6 +17,7 @@ use canvas_traits::webgl::ProgramLinkInfo;
 use canvas_traits::webgl::SwapChainId;
 use canvas_traits::webgl::TexDataType;
 use canvas_traits::webgl::TexFormat;
+use canvas_traits::webgl::WebARCommand;
 use canvas_traits::webgl::WebGLBufferId;
 use canvas_traits::webgl::WebGLChan;
 use canvas_traits::webgl::WebGLCommand;
@@ -326,6 +327,93 @@ impl WebGLThread {
                 self.remove_webgl_context(ctx_id);
             },
             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
+                match &command {
+                    WebGLCommand::DrawBackground => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::DrawBackground");
+                        self.handle_webar_command(ctx_id, WebARCommand::OnDraw);
+                    }
+                    WebGLCommand::GetProjectMatrix(result_sender) => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetProjectMatrix");
+
+                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                        let mut vector = Vec::with_capacity(16);
+                        vector.extend_from_slice(&arcore.proj_mat4x4);
+                        result_sender.send(vector);
+                    }
+                    WebGLCommand::GetViewMatrix(result_sender) => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetViewMatrix");
+
+                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                        let mut vector = Vec::with_capacity(16);
+                        vector.extend_from_slice(&arcore.view_mat4x4);
+                        result_sender.send(vector);
+                    }
+//                    WebGLCommand::ProjectViewMatrix(location) => {
+//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ProjectViewMatrix");
+//
+//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
+//                        let arcore = &info.arcore;
+////                        let location = arcore.uniform_mvp_mat_;
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectViewMatrix  location = {}", location));
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectViewMatrix  mvp = {:?}", &arcore.pv));
+//                        if location == -1 {
+//                            ()
+//                        } else {
+//                            let data = Self::make_current_if_needed(
+//                                &self.device,
+//                                ctx_id,
+//                                &self.contexts,
+//                                &mut self.bound_context_id,
+//                            ).expect("WebGLContext not found");
+//                            data.gl.uniform_matrix_4fv(location, false, &arcore.pv);
+//                        };
+//                    }
+//                    WebGLCommand::ProjectMatrix(*location) => {
+//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ProjectMatrix");
+//
+//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
+//                        let arcore = &info.arcore;
+//
+////                        let location = &*arcore.uniform_mvp_mat_ as i32;
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectMatrix  location = {}", location));
+//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectMatrix  mvp = {:?}", &arcore.proj_mat4x4));
+//                        if location == -1 {
+//                            ()
+//                        } else {
+//                            let data = Self::make_current_if_needed(
+//                                &self.device,
+//                                ctx_id,
+//                                &self.contexts,
+//                                &mut self.bound_context_id,
+//                            ).expect("WebGLContext not found");
+//                            data.gl.uniform_matrix_4fv(location, false, &arcore.proj_mat4x4);
+//                        };
+//                    }
+//                    WebGLCommand::ViewMatrix(*location) => {
+//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ViewMatrix");
+//
+//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
+//                        let arcore = &info.arcore;
+//                        if let Some(ctx) = Self::make_current_if_needed(&self.device, ctx_id, &self.contexts, &mut self.bound_context_id) {
+//                            //                            let location = arcore.uniform_mvp_mat_;
+//                            ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ViewMatrix  location = {}", location));
+//                            ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ViewMatrix  mvp = {:?}", &arcore.view_mat4x4));
+//                            if location == -1 {
+//                                ()
+//                            } else {
+//                                let data = Self::make_current_if_needed(
+//                                    &self.device,
+//                                    ctx_id,
+//                                    &self.contexts,
+//                                    &mut self.bound_context_id,
+//                                ).expect("WebGLContext not found");
+//                                data.gl.uniform_matrix_4fv(location, false, &arcore.view_mat4x4);
+//                            };
+//                        }
+//                    }
+
+                    _ => {}
+                }
                 self.handle_webgl_command(ctx_id, command, backtrace);
             },
             WebGLMsg::WebVRCommand(ctx_id, command) => {
@@ -403,6 +491,26 @@ impl WebGLThread {
                 command,
                 backtrace,
             );
+        }
+    }
+
+    fn handle_webar_command(&mut self, ctx_id: WebGLContextId, command: WebARCommand) {
+        let data = Self::make_current_if_needed(
+            &self.device,
+            ctx_id,
+            &self.contexts,
+            &mut self.bound_context_id,
+        ).expect("WebGLContext not found");
+
+        let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+
+        match command {
+            WebARCommand::OnDisplayChanged(display_rotation, width, height) => {
+                arcore.on_display_changed(&*data.gl, display_rotation, width, height);
+            }
+            WebARCommand::OnDraw => {
+                arcore.on_draw(&*data.gl);
+            }
         }
     }
 
@@ -562,8 +670,17 @@ impl WebGLThread {
             texture_target,
         );
 
+        let mut arcore = ::arcore_jni::init_arcore();
+        let data = Self::make_current_if_needed(
+            &self.device,
+            id,
+            &self.contexts,
+            &mut self.bound_context_id,
+        ).expect("WebGLContext not found");
+        &arcore.on_display_changed(&data.gl, 0, 1080, 1920);
+
         self.cached_context_info
-            .insert(id, WebGLContextInfo { image_key });
+            .insert(id, WebGLContextInfo { image_key, arcore });
 
         Ok((id, limits))
     }
@@ -1000,6 +1117,7 @@ impl Drop for WebGLThread {
 struct WebGLContextInfo {
     /// Currently used WebRender image key.
     image_key: webrender_api::ImageKey,
+    arcore: ::arcore_jni::ArCore,
 }
 
 // TODO(pcwalton): Add `GL_TEXTURE_EXTERNAL_OES`?
@@ -1038,6 +1156,13 @@ impl WebGLImpl {
         debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
 
         match command {
+            WebGLCommand::DrawBackground => (),
+            WebGLCommand::ProjectViewMatrix(_) => (),
+            WebGLCommand::ProjectMatrix(_) => (),
+            WebGLCommand::ViewMatrix(_) => (),
+            WebGLCommand::GetProjectMatrix(_) => (),
+            WebGLCommand::GetViewMatrix(_) => (),
+
             WebGLCommand::GetContextAttributes(ref sender) => sender.send(*attributes).unwrap(),
             WebGLCommand::ActiveTexture(target) => gl.active_texture(target),
             WebGLCommand::AttachShader(program_id, shader_id) => {
