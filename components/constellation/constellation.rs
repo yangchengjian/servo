@@ -126,12 +126,12 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 use media::{GLPlayerThreads, WindowGLContext};
 use msg::constellation_msg::{BackgroundHangMonitorRegister, HangMonitorAlert, SamplerControlMsg};
 use msg::constellation_msg::{
-    BrowsingContextGroupId, BrowsingContextId, HistoryStateId, PipelineId,
-    TopLevelBrowsingContextId,
+    BroadcastChannelRouterId, MessagePortId, MessagePortRouterId, PipelineNamespace,
+    PipelineNamespaceId, PipelineNamespaceRequest, TraversalDirection,
 };
 use msg::constellation_msg::{
-    MessagePortId, MessagePortRouterId, PipelineNamespace, PipelineNamespaceId,
-    PipelineNamespaceRequest, TraversalDirection,
+    BrowsingContextGroupId, BrowsingContextId, HistoryStateId, PipelineId,
+    TopLevelBrowsingContextId,
 };
 use net_traits::pub_domains::reg_host;
 use net_traits::request::RequestBuilder;
@@ -142,7 +142,8 @@ use profile_traits::time;
 use script_traits::CompositorEvent::{MouseButtonEvent, MouseMoveEvent};
 use script_traits::{webdriver_msg, LogEntry, ScriptToConstellationChan, ServiceWorkerMsg};
 use script_traits::{
-    AnimationState, AnimationTickType, AuxiliaryBrowsingContextLoadInfo, CompositorEvent,
+    AnimationState, AnimationTickType, AuxiliaryBrowsingContextLoadInfo, BroadcastMsg,
+    CompositorEvent,
 };
 use script_traits::{ConstellationControlMsg, DiscardBrowsingContext};
 use script_traits::{DocumentActivity, DocumentState, LayoutControlMsg, LoadData, LoadOrigin};
@@ -166,6 +167,7 @@ use std::marker::PhantomData;
 use std::mem::replace;
 use std::process;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use style_traits::viewport::ViewportConstraints;
@@ -281,11 +283,11 @@ pub struct Constellation<Message, LTF, STF> {
 
     /// A channel for the background hang monitor to send messages
     /// to the constellation.
-    background_hang_monitor_sender: IpcSender<HangMonitorAlert>,
+    background_hang_monitor_sender: Option<IpcSender<HangMonitorAlert>>,
 
     /// A channel for the constellation to receiver messages
     /// from the background hang monitor.
-    background_hang_monitor_receiver: Receiver<Result<HangMonitorAlert, IpcError>>,
+    background_hang_monitor_receiver: Option<Receiver<Result<HangMonitorAlert, IpcError>>>,
 
     /// An IPC channel for layout threads to send messages to the constellation.
     /// This is the layout threads' view of `layout_receiver`.
@@ -397,6 +399,12 @@ pub struct Constellation<Message, LTF, STF> {
 
     /// A map of router-id to ipc-sender, to route messages to ports.
     message_port_routers: HashMap<MessagePortRouterId, IpcSender<MessagePortMsg>>,
+
+    /// A map of broadcast routers to their IPC sender.
+    broadcast_routers: HashMap<BroadcastChannelRouterId, IpcSender<BroadcastMsg>>,
+
+    /// A map of origin to a map of channel-name to a list of relevant routers.
+    broadcast_channels: HashMap<ImmutableOrigin, HashMap<String, Vec<BroadcastChannelRouterId>>>,
 
     /// The set of all the pipelines in the browser.  (See the `pipeline` module
     /// for more details.)
@@ -546,6 +554,9 @@ pub struct InitialConstellationState {
 
     /// Mechanism to force the compositor to process events.
     pub event_loop_waker: Option<Box<dyn EventLoopWaker>>,
+
+    /// A flag share with the compositor to indicate that a WR frame is in progress.
+    pub pending_wr_frame: Arc<AtomicBool>,
 }
 
 /// Data needed for webdriver
@@ -720,12 +731,17 @@ enum WebrenderMsg {
 
 /// Accept messages from content processes that need to be relayed to the WebRender
 /// instance in the parent process.
-fn handle_webrender_message(webrender_api: &webrender_api::RenderApi, msg: WebrenderMsg) {
+fn handle_webrender_message(
+    pending_wr_frame: &AtomicBool,
+    webrender_api: &webrender_api::RenderApi,
+    msg: WebrenderMsg,
+) {
     match msg {
         WebrenderMsg::Layout(script_traits::WebrenderMsg::SendInitialTransaction(
             doc,
             pipeline,
         )) => {
+            pending_wr_frame.store(true, Ordering::SeqCst);
             let mut txn = webrender_api::Transaction::new();
             txn.set_display_list(
                 webrender_api::Epoch(0),
@@ -757,6 +773,7 @@ fn handle_webrender_message(webrender_api: &webrender_api::RenderApi, msg: Webre
             data,
             descriptor,
         )) => {
+            pending_wr_frame.store(true, Ordering::SeqCst);
             let mut txn = webrender_api::Transaction::new();
             txn.set_display_list(
                 epoch,
@@ -839,28 +856,42 @@ where
                     ipc_scheduler_receiver,
                 );
 
-                let (background_hang_monitor_sender, ipc_bhm_receiver) =
-                    ipc::channel().expect("ipc channel failure");
-                let background_hang_monitor_receiver =
-                    route_ipc_receiver_to_new_mpsc_receiver_preserving_errors(ipc_bhm_receiver);
+                let (background_hang_monitor_sender, background_hang_monitor_receiver) =
+                    if opts::get().background_hang_monitor {
+                        let (bhm_sender, ipc_bhm_receiver) =
+                            ipc::channel().expect("ipc channel failure");
+                        (
+                            Some(bhm_sender),
+                            Some(route_ipc_receiver_to_new_mpsc_receiver_preserving_errors(
+                                ipc_bhm_receiver,
+                            )),
+                        )
+                    } else {
+                        (None, None)
+                    };
 
                 // If we are in multiprocess mode,
                 // a dedicated per-process hang monitor will be initialized later inside the content process.
                 // See run_content_process in servo/lib.rs
-                let (background_monitor_register, sampler_chan) = if opts::multiprocess() {
-                    (None, vec![])
-                } else {
-                    let (sampling_profiler_control, sampling_profiler_port) =
-                        ipc::channel().expect("ipc channel failure");
-
-                    (
-                        Some(HangMonitorRegister::init(
-                            background_hang_monitor_sender.clone(),
-                            sampling_profiler_port,
-                        )),
-                        vec![sampling_profiler_control],
-                    )
-                };
+                let (background_monitor_register, sampler_chan) =
+                    if opts::multiprocess() || !opts::get().background_hang_monitor {
+                        (None, vec![])
+                    } else {
+                        let (sampling_profiler_control, sampling_profiler_port) =
+                            ipc::channel().expect("ipc channel failure");
+                        if let Some(bhm_sender) = background_hang_monitor_sender.clone() {
+                            (
+                                Some(HangMonitorRegister::init(
+                                    bhm_sender,
+                                    sampling_profiler_port,
+                                )),
+                                vec![sampling_profiler_control],
+                            )
+                        } else {
+                            warn!("No BHM sender found in BHM mode.");
+                            (None, vec![])
+                        }
+                    };
 
                 let (ipc_layout_sender, ipc_layout_receiver) =
                     ipc::channel().expect("ipc channel failure");
@@ -881,10 +912,12 @@ where
                     ipc::channel().expect("ipc channel failure");
 
                 let webrender_api = state.webrender_api_sender.create_api();
+                let pending_wr_frame_clone = state.pending_wr_frame.clone();
                 ROUTER.add_route(
                     webrender_ipc_receiver.to_opaque(),
                     Box::new(move |message| {
                         handle_webrender_message(
+                            &pending_wr_frame_clone,
                             &webrender_api,
                             WebrenderMsg::Layout(message.to().expect("conversion failure")),
                         )
@@ -892,10 +925,12 @@ where
                 );
 
                 let webrender_api = state.webrender_api_sender.create_api();
+                let pending_wr_frame_clone = state.pending_wr_frame.clone();
                 ROUTER.add_route(
                     webrender_image_ipc_receiver.to_opaque(),
                     Box::new(move |message| {
                         handle_webrender_message(
+                            &pending_wr_frame_clone,
                             &webrender_api,
                             WebrenderMsg::Net(message.to().expect("conversion failure")),
                         )
@@ -933,6 +968,8 @@ where
                     browsing_context_group_next_id: Default::default(),
                     message_ports: HashMap::new(),
                     message_port_routers: HashMap::new(),
+                    broadcast_routers: HashMap::new(),
+                    broadcast_channels: HashMap::new(),
                     pipelines: HashMap::new(),
                     browsing_contexts: HashMap::new(),
                     pending_changes: vec![],
@@ -1399,7 +1436,7 @@ where
             recv(self.script_receiver) -> msg => {
                 msg.expect("Unexpected script channel panic in constellation").map(Request::Script)
             }
-            recv(self.background_hang_monitor_receiver) -> msg => {
+            recv(self.background_hang_monitor_receiver.as_ref().unwrap_or(&never())) -> msg => {
                 msg.expect("Unexpected BHM channel panic in constellation").map(Request::BackgroundHangMonitor)
             }
             recv(self.compositor_receiver) -> msg => {
@@ -1586,7 +1623,7 @@ where
                     Some(ctx) => ctx.pipeline_id,
                     None => {
                         return warn!(
-                            "LoadUrl for unknow browsing context: {:?}",
+                            "LoadUrl for unknown browsing context: {:?}",
                             top_level_browsing_context_id
                         );
                     },
@@ -1681,6 +1718,9 @@ where
             FromCompositorMsg::MediaSessionAction(action) => {
                 self.handle_media_session_action_msg(action);
             },
+            FromCompositorMsg::ChangeBrowserVisibility(top_level_browsing_context_id, visible) => {
+                self.handle_change_browser_visibility(top_level_browsing_context_id, visible);
+            },
         }
     }
 
@@ -1728,6 +1768,36 @@ where
             },
             FromScriptMsg::EntanglePorts(port1, port2) => {
                 self.handle_entangle_messageports(port1, port2);
+            },
+            FromScriptMsg::NewBroadcastChannelRouter(router_id, ipc_sender, origin) => {
+                self.handle_new_broadcast_channel_router(
+                    source_pipeline_id,
+                    router_id,
+                    ipc_sender,
+                    origin,
+                );
+            },
+            FromScriptMsg::NewBroadcastChannelNameInRouter(router_id, channel_name, origin) => {
+                self.handle_new_broadcast_channel_name_in_router(
+                    source_pipeline_id,
+                    router_id,
+                    channel_name,
+                    origin,
+                );
+            },
+            FromScriptMsg::RemoveBroadcastChannelNameInRouter(router_id, channel_name, origin) => {
+                self.handle_remove_broadcast_channel_name_in_router(
+                    source_pipeline_id,
+                    router_id,
+                    channel_name,
+                    origin,
+                );
+            },
+            FromScriptMsg::RemoveBroadcastChannelRouter(router_id, origin) => {
+                self.handle_remove_broadcast_channel_router(source_pipeline_id, router_id, origin);
+            },
+            FromScriptMsg::ScheduleBroadcast(router_id, message) => {
+                self.handle_schedule_broadcast(source_pipeline_id, router_id, message);
             },
             FromScriptMsg::ForwardToEmbedder(embedder_msg) => {
                 self.embedder_proxy
@@ -1945,6 +2015,170 @@ where
         }
     }
 
+    /// Check the origin of a message against that of the pipeline it came from.
+    /// Note: this is still limited as a security check,
+    /// see https://github.com/servo/servo/issues/11722
+    fn check_origin_against_pipeline(
+        &self,
+        pipeline_id: &PipelineId,
+        origin: &ImmutableOrigin,
+    ) -> Result<(), ()> {
+        let pipeline_origin = match self.pipelines.get(&pipeline_id) {
+            Some(pipeline) => pipeline.load_data.url.origin(),
+            None => {
+                warn!("Received message from closed or unknown pipeline.");
+                return Err(());
+            },
+        };
+        if &pipeline_origin == origin {
+            return Ok(());
+        }
+        Err(())
+    }
+
+    /// Broadcast a message via routers in various event-loops.
+    fn handle_schedule_broadcast(
+        &self,
+        pipeline_id: PipelineId,
+        router_id: BroadcastChannelRouterId,
+        message: BroadcastMsg,
+    ) {
+        if self
+            .check_origin_against_pipeline(&pipeline_id, &message.origin)
+            .is_err()
+        {
+            return warn!(
+                "Attempt to schedule broadcast from an origin not matching the origin of the msg."
+            );
+        }
+        if let Some(channels) = self.broadcast_channels.get(&message.origin) {
+            let routers = match channels.get(&message.channel_name) {
+                Some(routers) => routers,
+                None => return warn!("Broadcast to channel name without active routers."),
+            };
+            for router in routers {
+                // Exclude the sender of the broadcast.
+                // Broadcasting locally is done at the point of sending.
+                if router == &router_id {
+                    continue;
+                }
+
+                if let Some(sender) = self.broadcast_routers.get(&router) {
+                    if sender.send(message.clone()).is_err() {
+                        warn!("Failed to broadcast message to router: {:?}", router);
+                    }
+                } else {
+                    warn!("No sender for broadcast router: {:?}", router);
+                }
+            }
+        } else {
+            warn!(
+                "Attempt to schedule a broadcast for an origin without routers {:?}",
+                message.origin
+            );
+        }
+    }
+
+    /// Remove a channel-name for a given broadcast router.
+    fn handle_remove_broadcast_channel_name_in_router(
+        &mut self,
+        pipeline_id: PipelineId,
+        router_id: BroadcastChannelRouterId,
+        channel_name: String,
+        origin: ImmutableOrigin,
+    ) {
+        if self
+            .check_origin_against_pipeline(&pipeline_id, &origin)
+            .is_err()
+        {
+            return warn!("Attempt to remove channel name from an unexpected origin.");
+        }
+        if let Some(channels) = self.broadcast_channels.get_mut(&origin) {
+            let is_empty = if let Some(routers) = channels.get_mut(&channel_name) {
+                routers.retain(|router| router != &router_id);
+                routers.is_empty()
+            } else {
+                return warn!(
+                    "Multiple attemps to remove name for broadcast-channel {:?} at {:?}",
+                    channel_name, origin
+                );
+            };
+            if is_empty {
+                channels.remove(&channel_name);
+            }
+        } else {
+            warn!(
+                "Attempt to remove a channel-name for an origin without channels {:?}",
+                origin
+            );
+        }
+    }
+
+    /// Note a new channel-name relevant to a given broadcast router.
+    fn handle_new_broadcast_channel_name_in_router(
+        &mut self,
+        pipeline_id: PipelineId,
+        router_id: BroadcastChannelRouterId,
+        channel_name: String,
+        origin: ImmutableOrigin,
+    ) {
+        if self
+            .check_origin_against_pipeline(&pipeline_id, &origin)
+            .is_err()
+        {
+            return warn!("Attempt to add channel name from an unexpected origin.");
+        }
+        let channels = self
+            .broadcast_channels
+            .entry(origin)
+            .or_insert_with(HashMap::new);
+
+        let routers = channels.entry(channel_name).or_insert_with(Vec::new);
+
+        routers.push(router_id);
+    }
+
+    /// Remove a broadcast router.
+    fn handle_remove_broadcast_channel_router(
+        &mut self,
+        pipeline_id: PipelineId,
+        router_id: BroadcastChannelRouterId,
+        origin: ImmutableOrigin,
+    ) {
+        if self
+            .check_origin_against_pipeline(&pipeline_id, &origin)
+            .is_err()
+        {
+            return warn!("Attempt to remove broadcast router from an unexpected origin.");
+        }
+        if self.broadcast_routers.remove(&router_id).is_none() {
+            warn!("Attempt to remove unknown broadcast-channel router.");
+        }
+    }
+
+    /// Add a new broadcast router.
+    fn handle_new_broadcast_channel_router(
+        &mut self,
+        pipeline_id: PipelineId,
+        router_id: BroadcastChannelRouterId,
+        ipc_sender: IpcSender<BroadcastMsg>,
+        origin: ImmutableOrigin,
+    ) {
+        if self
+            .check_origin_against_pipeline(&pipeline_id, &origin)
+            .is_err()
+        {
+            return warn!("Attempt to add broadcast router from an unexpected origin.");
+        }
+        if self
+            .broadcast_routers
+            .insert(router_id, ipc_sender)
+            .is_some()
+        {
+            warn!("Multple attempt to add broadcast-channel router.");
+        }
+    }
+
     fn handle_request_wgpu_adapter(
         &mut self,
         source_pipeline_id: PipelineId,
@@ -1973,7 +2207,11 @@ where
             Some(browsing_context_group) => {
                 let adapter_request =
                     if let FromScriptMsg::RequestAdapter(sender, options, ids) = request {
-                        WebGPURequest::RequestAdapter(sender, options, ids)
+                        WebGPURequest::RequestAdapter {
+                            sender,
+                            options,
+                            ids,
+                        }
                     } else {
                         return warn!("Wrong message type in handle_request_wgpu_adapter");
                     };
@@ -2563,7 +2801,7 @@ where
 
         for receiver in receivers {
             if let Err(e) = receiver.recv() {
-                warn!("Failed to receive exit response from WebGPU ({})", e);
+                warn!("Failed to receive exit response from WebGPU ({:?})", e);
             }
         }
 
@@ -2586,10 +2824,10 @@ where
 
         // Receive exit signals from threads.
         if let Err(e) = core_receiver.recv() {
-            warn!("Exit resource thread failed ({})", e);
+            warn!("Exit resource thread failed ({:?})", e);
         }
         if let Err(e) = storage_receiver.recv() {
-            warn!("Exit storage thread failed ({})", e);
+            warn!("Exit storage thread failed ({:?})", e);
         }
 
         debug!("Asking compositor to complete shutdown.");
@@ -3227,14 +3465,14 @@ where
                     },
                 }
             },
-            AnimationTickType::Layout => {
-                let msg = LayoutControlMsg::TickAnimations;
-                match self.pipelines.get(&pipeline_id) {
-                    Some(pipeline) => pipeline.layout_chan.send(msg),
-                    None => {
-                        return warn!("Pipeline {:?} got layout tick after closure.", pipeline_id);
-                    },
-                }
+            AnimationTickType::Layout => match self.pipelines.get(&pipeline_id) {
+                Some(pipeline) => {
+                    let msg = LayoutControlMsg::TickAnimations(pipeline.load_data.url.origin());
+                    pipeline.layout_chan.send(msg)
+                },
+                None => {
+                    return warn!("Pipeline {:?} got layout tick after closure.", pipeline_id);
+                },
             },
         };
         if let Err(e) = result {
@@ -4276,6 +4514,32 @@ where
         }
     }
 
+    fn handle_change_browser_visibility(
+        &mut self,
+        top_level_browsing_context_id: TopLevelBrowsingContextId,
+        visible: bool,
+    ) {
+        let browsing_context_id = BrowsingContextId::from(top_level_browsing_context_id);
+        let pipeline_id = match self.browsing_contexts.get(&browsing_context_id) {
+            Some(browsing_context) => browsing_context.pipeline_id,
+            None => {
+                return warn!(
+                    "Browsing context {} got visibility change event after closure.",
+                    browsing_context_id
+                );
+            },
+        };
+        match self.pipelines.get(&pipeline_id) {
+            None => {
+                return warn!(
+                    "Pipeline {} got visibility change event after closure.",
+                    pipeline_id
+                )
+            },
+            Some(pipeline) => pipeline.notify_visibility(visible),
+        };
+    }
+
     fn notify_history_changed(&self, top_level_browsing_context_id: TopLevelBrowsingContextId) {
         // Send a flat projection of the history to embedder.
         // The final vector is a concatenation of the LoadData of the past
@@ -4838,7 +5102,7 @@ where
                         warn!("Failed to send GetCurrentEpoch ({}).", e);
                     }
                     match epoch_receiver.recv() {
-                        Err(e) => warn!("Failed to receive current epoch ({}).", e),
+                        Err(e) => warn!("Failed to receive current epoch ({:?}).", e),
                         Ok(layout_thread_epoch) => {
                             if layout_thread_epoch != *compositor_epoch {
                                 return ReadyToSave::EpochMismatch;

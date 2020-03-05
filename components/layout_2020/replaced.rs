@@ -2,22 +2,25 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use crate::context::LayoutContext;
 use crate::dom_traversal::NodeExt;
-use crate::fragments::{Fragment, ImageFragment};
+use crate::fragments::{DebugId, Fragment, ImageFragment};
 use crate::geom::flow_relative::{Rect, Vec2};
 use crate::geom::PhysicalSize;
 use crate::sizing::ContentSizes;
 use crate::style_ext::ComputedValuesExt;
 use crate::ContainingBlock;
 use net_traits::image::base::Image;
+use net_traits::image_cache::{ImageOrMetadataAvailable, UsePlaceholder};
 use servo_arc::Arc as ServoArc;
 use std::sync::Arc;
 use style::properties::ComputedValues;
+use style::servo::url::ComputedUrl;
 use style::values::computed::{Length, LengthOrAuto};
 use style::values::CSSFloat;
 use style::Zero;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) struct ReplacedContent {
     pub kind: ReplacedContentKind,
     intrinsic: IntrinsicSizes,
@@ -34,14 +37,14 @@ pub(crate) struct ReplacedContent {
 ///
 /// * For SVG, see https://svgwg.org/svg2-draft/coords.html#SizingSVGInCSS
 ///   and again https://github.com/w3c/csswg-drafts/issues/4572.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) struct IntrinsicSizes {
     pub width: Option<Length>,
     pub height: Option<Length>,
     pub ratio: Option<CSSFloat>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) enum ReplacedContentKind {
     Image(Option<Arc<Image>>),
 }
@@ -57,6 +60,39 @@ impl ReplacedContent {
 
             let width = (intrinsic_size_in_dots.width as CSSFloat) / dppx;
             let height = (intrinsic_size_in_dots.height as CSSFloat) / dppx;
+            return Some(Self {
+                kind: ReplacedContentKind::Image(image),
+                intrinsic: IntrinsicSizes {
+                    width: Some(Length::new(width)),
+                    height: Some(Length::new(height)),
+                    // FIXME https://github.com/w3c/csswg-drafts/issues/4572
+                    ratio: Some(width / height),
+                },
+            });
+        }
+        None
+    }
+
+    pub fn from_image_url<'dom>(
+        element: impl NodeExt<'dom>,
+        context: &LayoutContext,
+        image_url: &ComputedUrl,
+    ) -> Option<Self> {
+        if let ComputedUrl::Valid(image_url) = image_url {
+            let (image, width, height) = match context.get_or_request_image_or_meta(
+                element.as_opaque(),
+                image_url.clone(),
+                UsePlaceholder::No,
+            ) {
+                Some(ImageOrMetadataAvailable::ImageAvailable(image, _)) => {
+                    (Some(image.clone()), image.width as f32, image.height as f32)
+                },
+                Some(ImageOrMetadataAvailable::MetadataAvailable(metadata)) => {
+                    (None, metadata.width as f32, metadata.height as f32)
+                },
+                None => return None,
+            };
+
             return Some(Self {
                 kind: ReplacedContentKind::Image(image),
                 intrinsic: IntrinsicSizes {
@@ -113,6 +149,7 @@ impl ReplacedContent {
                 .and_then(|image| image.id)
                 .map(|image_key| {
                     Fragment::Image(ImageFragment {
+                        debug_id: DebugId::new(),
                         style: style.clone(),
                         rect: Rect {
                             start_corner: Vec2::zero(),

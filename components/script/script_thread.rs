@@ -545,9 +545,9 @@ pub struct ScriptThread {
     task_queue: TaskQueue<MainThreadScriptMsg>,
 
     /// A handle to register associated layout threads for hang-monitoring.
-    background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
+    background_hang_monitor_register: Option<Box<dyn BackgroundHangMonitorRegister>>,
     /// The dedicated means of communication with the background-hang-monitor for this script-thread.
-    background_hang_monitor: Box<dyn BackgroundHangMonitor>,
+    background_hang_monitor: Option<Box<dyn BackgroundHangMonitor>>,
 
     /// A channel to hand out to script thread-based entities that need to be able to enqueue
     /// events in the event queue.
@@ -821,6 +821,23 @@ impl ScriptThreadFactory for ScriptThread {
 }
 
 impl ScriptThread {
+    pub(crate) fn get_any_layout_chan() -> Option<Sender<Msg>> {
+        SCRIPT_THREAD_ROOT.with(|root| {
+            let script_thread = match root.get() {
+                Some(s) => unsafe { &*s },
+                None => return None,
+            };
+            script_thread
+                .documents
+                .borrow()
+                .map
+                .values()
+                .next()
+                .map(|d| d.window().layout_chan())
+                .cloned()
+        })
+    }
+
     pub fn runtime_handle() -> ParentRuntime {
         SCRIPT_THREAD_ROOT.with(|root| {
             let script_thread = unsafe { &*root.get().unwrap() };
@@ -1262,18 +1279,20 @@ impl ScriptThread {
         let devtools_port =
             ROUTER.route_ipc_receiver_to_new_crossbeam_receiver(ipc_devtools_receiver);
 
-        // Ask the router to proxy IPC messages from the control port to us.
-        let control_port = ROUTER.route_ipc_receiver_to_new_crossbeam_receiver(state.control_port);
-
         let (image_cache_channel, image_cache_port) = unbounded();
 
         let task_queue = TaskQueue::new(port, chan.clone());
 
-        let background_hang_monitor = state.background_hang_monitor_register.register_component(
-            MonitoredComponentId(state.id, MonitoredComponentType::Script),
-            Duration::from_millis(1000),
-            Duration::from_millis(5000),
-        );
+        let background_hang_monitor = state.background_hang_monitor_register.clone().map(|bhm| {
+            bhm.register_component(
+                MonitoredComponentId(state.id.clone(), MonitoredComponentType::Script),
+                Duration::from_millis(1000),
+                Duration::from_millis(5000),
+            )
+        });
+
+        // Ask the router to proxy IPC messages from the control port to us.
+        let control_port = ROUTER.route_ipc_receiver_to_new_crossbeam_receiver(state.control_port);
 
         ScriptThread {
             documents: DomRefCell::new(Documents::new()),
@@ -1408,7 +1427,9 @@ impl ScriptThread {
         let mut sequential = vec![];
 
         // Notify the background-hang-monitor we are waiting for an event.
-        self.background_hang_monitor.notify_wait();
+        self.background_hang_monitor
+            .as_ref()
+            .map(|bhm| bhm.notify_wait());
 
         // Receive at least one message so we don't spinloop.
         debug!("Waiting for event.");
@@ -1662,7 +1683,8 @@ impl ScriptThread {
             ScriptThreadEventCategory::PortMessage => ScriptHangAnnotation::PortMessage,
         };
         self.background_hang_monitor
-            .notify_activity(HangAnnotation::Script(hang_annotation));
+            .as_ref()
+            .map(|bhm| bhm.notify_activity(HangAnnotation::Script(hang_annotation)));
     }
 
     fn message_to_pipeline(&self, msg: &MixedMessage) -> Option<PipelineId> {
@@ -2882,7 +2904,9 @@ impl ScriptThread {
             self.handle_exit_pipeline_msg(pipeline_id, DiscardBrowsingContext::Yes);
         }
 
-        self.background_hang_monitor.unregister();
+        self.background_hang_monitor
+            .as_ref()
+            .map(|bhm| bhm.unregister());
 
         debug!("Exited script thread.");
     }

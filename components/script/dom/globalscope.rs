@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use crate::dom::bindings::cell::DomRefCell;
+use crate::dom::bindings::codegen::Bindings::BroadcastChannelBinding::BroadcastChannelMethods;
 use crate::dom::bindings::codegen::Bindings::EventSourceBinding::EventSourceBinding::EventSourceMethods;
 use crate::dom::bindings::codegen::Bindings::VoidFunctionBinding::VoidFunction;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
@@ -12,13 +13,14 @@ use crate::dom::bindings::error::{report_pending_exception, Error, ErrorInfo};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomObject;
-use crate::dom::bindings::root::{DomRoot, MutNullableDom};
+use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::settings_stack::{entry_global, incumbent_global, AutoEntryScript};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
 use crate::dom::bindings::utils::to_frozen_array;
 use crate::dom::bindings::weakref::{DOMTracker, WeakRef};
 use crate::dom::blob::Blob;
+use crate::dom::broadcastchannel::BroadcastChannel;
 use crate::dom::crypto::Crypto;
 use crate::dom::dedicatedworkerglobalscope::DedicatedWorkerGlobalScope;
 use crate::dom::errorevent::ErrorEvent;
@@ -38,7 +40,7 @@ use crate::dom::window::Window;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::dom::workletglobalscope::WorkletGlobalScope;
 use crate::microtask::{Microtask, MicrotaskQueue, UserMicrotask};
-use crate::realms::enter_realm;
+use crate::realms::{enter_realm, InRealm};
 use crate::script_module::ModuleTree;
 use crate::script_runtime::{CommonScriptMsg, JSContext as SafeJSContext, ScriptChan, ScriptPort};
 use crate::script_thread::{MainThreadScriptChan, ScriptThread};
@@ -61,17 +63,19 @@ use dom_struct::dom_struct;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_channel::router::ROUTER;
 use js::glue::{IsWrapper, UnwrapObjectDynamic};
+use js::jsapi::JSContext;
 use js::jsapi::JSObject;
 use js::jsapi::{CurrentGlobalOrNull, GetNonCCWObjectGlobal};
 use js::jsapi::{HandleObject, Heap};
-use js::jsapi::{JSAutoRealm, JSContext};
 use js::jsval::{JSVal, UndefinedValue};
 use js::panic::maybe_resume_unwind;
 use js::rust::wrappers::EvaluateUtf8;
 use js::rust::{get_object_class, CompileOptionsWrapper, ParentRuntime, Runtime};
 use js::rust::{HandleValue, MutableHandleValue};
 use js::{JSCLASS_IS_DOMJSCLASS, JSCLASS_IS_GLOBAL};
-use msg::constellation_msg::{BlobId, MessagePortId, MessagePortRouterId, PipelineId};
+use msg::constellation_msg::{
+    BlobId, BroadcastChannelRouterId, MessagePortId, MessagePortRouterId, PipelineId,
+};
 use net_traits::blob_url_store::{get_blob_origin, BlobBuf};
 use net_traits::filemanager_thread::{
     FileManagerResult, FileManagerThreadMsg, ReadFileProgress, RelativePos,
@@ -82,13 +86,13 @@ use profile_traits::{ipc as profile_ipc, mem as profile_mem, time as profile_tim
 use script_traits::serializable::{BlobData, BlobImpl, FileBlob};
 use script_traits::transferable::MessagePortImpl;
 use script_traits::{
-    MessagePortMsg, MsDuration, PortMessageTask, ScriptMsg, ScriptToConstellationChan, TimerEvent,
+    BroadcastMsg, MessagePortMsg, MsDuration, PortMessageTask, ScriptMsg,
+    ScriptToConstellationChan, TimerEvent,
 };
 use script_traits::{TimerEventId, TimerSchedulerMsg, TimerSource};
 use servo_url::{MutableOrigin, ServoUrl};
-use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, RefMut};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
@@ -99,13 +103,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use time::{get_time, Timespec};
 use uuid::Uuid;
-use webgpu::wgpu::{
-    id::{
-        AdapterId, BindGroupId, BindGroupLayoutId, BufferId, CommandEncoderId, ComputePipelineId,
-        DeviceId, PipelineLayoutId, ShaderModuleId,
-    },
-    Backend,
-};
 
 #[derive(JSTraceable)]
 pub struct AutoCloseWorker(Arc<AtomicBool>);
@@ -123,6 +120,9 @@ pub struct GlobalScope {
 
     /// The message-port router id for this global, if it is managing ports.
     message_port_state: DomRefCell<MessagePortState>,
+
+    /// The broadcast channels state this global, if it is managing any.
+    broadcast_channel_state: DomRefCell<BroadcastChannelState>,
 
     /// The blobs managed by this global, if any.
     blob_state: DomRefCell<BlobState>,
@@ -237,6 +237,13 @@ struct MessageListener {
     context: Trusted<GlobalScope>,
 }
 
+/// A wrapper for broadcasts coming in over IPC, and the event-loop.
+struct BroadcastListener {
+    canceller: TaskCanceller,
+    task_source: DOMManipulationTaskSource,
+    context: Trusted<GlobalScope>,
+}
+
 /// A wrapper between timer events coming in over IPC, and the event-loop.
 struct TimerListener {
     canceller: TaskCanceller,
@@ -293,18 +300,43 @@ pub enum BlobState {
 
 /// Data representing a message-port managed by this global.
 #[derive(JSTraceable, MallocSizeOf)]
-pub enum ManagedMessagePort {
+#[unrooted_must_root_lint::must_root]
+pub struct ManagedMessagePort {
+    /// The DOM port.
+    dom_port: Dom<MessagePort>,
+    /// The logic and data backing the DOM port.
+    /// The option is needed to take out the port-impl
+    /// as part of its transferring steps,
+    /// without having to worry about rooting the dom-port.
+    port_impl: Option<MessagePortImpl>,
     /// We keep ports pending when they are first transfer-received,
     /// and only add them, and ask the constellation to complete the transfer,
     /// in a subsequent task if the port hasn't been re-transfered.
-    Pending(MessagePortImpl, WeakRef<MessagePort>),
-    /// A port who was transferred into, or initially created in, this realm,
-    /// and that hasn't been re-transferred in the same task it was noted.
-    Added(MessagePortImpl, WeakRef<MessagePort>),
+    pending: bool,
+    /// Has the port been closed? If closed, it can be dropped and later GC'ed.
+    closed: bool,
+}
+
+/// State representing whether this global is currently managing broadcast channels.
+#[derive(JSTraceable, MallocSizeOf)]
+#[unrooted_must_root_lint::must_root]
+pub enum BroadcastChannelState {
+    /// The broadcast-channel router id for this global, and a queue of managed channels.
+    /// Step 9, "sort destinations"
+    /// of https://html.spec.whatwg.org/multipage/#dom-broadcastchannel-postmessage
+    /// requires keeping track of creation order, hence the queue.
+    Managed(
+        BroadcastChannelRouterId,
+        /// The map of channel-name to queue of channels, in order of creation.
+        HashMap<DOMString, VecDeque<Dom<BroadcastChannel>>>,
+    ),
+    /// This global is not managing any broadcast channels at this time.
+    UnManaged,
 }
 
 /// State representing whether this global is currently managing messageports.
 #[derive(JSTraceable, MallocSizeOf)]
+#[unrooted_must_root_lint::must_root]
 pub enum MessagePortState {
     /// The message-port router id for this global, and a map of managed ports.
     Managed(
@@ -313,6 +345,29 @@ pub enum MessagePortState {
     ),
     /// This global is not managing any ports at this time.
     UnManaged,
+}
+
+impl BroadcastListener {
+    /// Handle a broadcast coming in over IPC,
+    /// by queueing the appropriate task on the relevant event-loop.
+    fn handle(&self, event: BroadcastMsg) {
+        let context = self.context.clone();
+
+        // Note: strictly speaking we should just queue the message event tasks,
+        // not queue a task that then queues more tasks.
+        // This however seems to be hard to avoid in the light of the IPC.
+        // One can imagine queueing tasks directly,
+        // for channels that would be in the same script-thread.
+        let _ = self.task_source.queue_with_canceller(
+            task!(broadcast_message_event: move || {
+                let global = context.root();
+                // Step 10 of https://html.spec.whatwg.org/multipage/#dom-broadcastchannel-postmessage,
+                // For each BroadcastChannel object destination in destinations, queue a task.
+                global.broadcast_message_event(event, None);
+            }),
+            &self.canceller,
+        );
+    }
 }
 
 impl TimerListener {
@@ -410,7 +465,7 @@ impl MessageListener {
                 let _ = self.task_source.queue_with_canceller(
                     task!(process_remove_message_port: move || {
                         let global = context.root();
-                        global.remove_message_port(&port_id);
+                        global.note_entangled_port_removed(&port_id);
                     }),
                     &self.canceller,
                 );
@@ -493,6 +548,7 @@ impl GlobalScope {
     ) -> Self {
         Self {
             message_port_state: DomRefCell::new(MessagePortState::UnManaged),
+            broadcast_channel_state: DomRefCell::new(BroadcastChannelState::UnManaged),
             blob_state: DomRefCell::new(BlobState::UnManaged),
             eventtarget: EventTarget::new_inherited(),
             crypto: Default::default(),
@@ -581,12 +637,16 @@ impl GlobalScope {
                 None => {
                     panic!("complete_port_transfer called for an unknown port.");
                 },
-                Some(ManagedMessagePort::Pending(_, _)) => {
-                    panic!("CompleteTransfer msg received for a pending port.");
-                },
-                Some(ManagedMessagePort::Added(port_impl, _port)) => {
-                    port_impl.complete_transfer(tasks);
-                    port_impl.enabled()
+                Some(managed_port) => {
+                    if managed_port.pending {
+                        panic!("CompleteTransfer msg received for a pending port.");
+                    }
+                    if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                        port_impl.complete_transfer(tasks);
+                        port_impl.enabled()
+                    } else {
+                        panic!("managed-port has no port-impl.");
+                    }
                 },
             }
         } else {
@@ -601,11 +661,18 @@ impl GlobalScope {
     pub fn perform_a_dom_garbage_collection_checkpoint(&self) {
         self.perform_a_message_port_garbage_collection_checkpoint();
         self.perform_a_blob_garbage_collection_checkpoint();
+        self.perform_a_broadcast_channel_garbage_collection_checkpoint();
+    }
+
+    /// Remove the routers for ports and broadcast-channels.
+    pub fn remove_web_messaging_infra(&self) {
+        self.remove_message_ports_router();
+        self.remove_broadcast_channel_router();
     }
 
     /// Update our state to un-managed,
     /// and tell the constellation to drop the sender to our message-port router.
-    pub fn remove_message_ports_router(&self) {
+    fn remove_message_ports_router(&self) {
         if let MessagePortState::Managed(router_id, _message_ports) =
             &*self.message_port_state.borrow()
         {
@@ -614,6 +681,22 @@ impl GlobalScope {
                 .send(ScriptMsg::RemoveMessagePortRouter(router_id.clone()));
         }
         *self.message_port_state.borrow_mut() = MessagePortState::UnManaged;
+    }
+
+    /// Update our state to un-managed,
+    /// and tell the constellation to drop the sender to our broadcast router.
+    fn remove_broadcast_channel_router(&self) {
+        if let BroadcastChannelState::Managed(router_id, _channels) =
+            &*self.broadcast_channel_state.borrow()
+        {
+            let _ =
+                self.script_to_constellation_chan()
+                    .send(ScriptMsg::RemoveBroadcastChannelRouter(
+                        router_id.clone(),
+                        self.origin().immutable().clone(),
+                    ));
+        }
+        *self.broadcast_channel_state.borrow_mut() = BroadcastChannelState::UnManaged;
     }
 
     /// <https://html.spec.whatwg.org/multipage/#entangle>
@@ -626,19 +709,13 @@ impl GlobalScope {
                     None => {
                         return warn!("entangled_ports called on a global not managing the port.");
                     },
-                    Some(ManagedMessagePort::Pending(port_impl, dom_port)) => {
-                        dom_port
-                            .root()
-                            .expect("Port to be entangled to not have been GC'ed")
-                            .entangle(entangled_id.clone());
-                        port_impl.entangle(entangled_id.clone());
-                    },
-                    Some(ManagedMessagePort::Added(port_impl, dom_port)) => {
-                        dom_port
-                            .root()
-                            .expect("Port to be entangled to not have been GC'ed")
-                            .entangle(entangled_id.clone());
-                        port_impl.entangle(entangled_id.clone());
+                    Some(managed_port) => {
+                        if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                            managed_port.dom_port.entangle(entangled_id.clone());
+                            port_impl.entangle(entangled_id.clone());
+                        } else {
+                            panic!("managed-port has no port-impl.");
+                        }
                     },
                 }
             }
@@ -651,23 +728,16 @@ impl GlobalScope {
             .send(ScriptMsg::EntanglePorts(port1, port2));
     }
 
-    /// Remove all referrences to a port.
-    pub fn remove_message_port(&self, port_id: &MessagePortId) {
-        let is_empty = if let MessagePortState::Managed(_id, message_ports) =
-            &mut *self.message_port_state.borrow_mut()
-        {
-            match message_ports.remove(&port_id) {
-                None => panic!("remove_message_port called on a global not managing the port."),
-                Some(_) => message_ports.is_empty(),
-            }
-        } else {
-            return warn!("remove_message_port called on a global not managing any ports.");
-        };
-        if is_empty {
-            // Remove our port router,
-            // it will be setup again if we start managing ports again.
-            self.remove_message_ports_router();
-        }
+    /// Note that the entangled port of `port_id` has been removed in another global.
+    pub fn note_entangled_port_removed(&self, port_id: &MessagePortId) {
+        // Note: currently this is a no-op,
+        // as we only use the `close` method to manage the local lifecyle of a port.
+        // This could be used as part of lifecyle management to determine a port can be GC'ed.
+        // See https://github.com/servo/servo/issues/25772
+        warn!(
+            "Entangled port of {:?} has been removed in another global",
+            port_id
+        );
     }
 
     /// Handle the transfer of a port in the current task.
@@ -675,18 +745,20 @@ impl GlobalScope {
         if let MessagePortState::Managed(_id, message_ports) =
             &mut *self.message_port_state.borrow_mut()
         {
-            let mut port = match message_ports.remove(&port_id) {
-                None => {
-                    panic!("mark_port_as_transferred called on a global not managing the port.")
-                },
-                Some(ManagedMessagePort::Pending(port_impl, _)) => port_impl,
-                Some(ManagedMessagePort::Added(port_impl, _)) => port_impl,
-            };
-            port.set_has_been_shipped();
+            let mut port_impl = message_ports
+                .remove(&port_id)
+                .map(|ref mut managed_port| {
+                    managed_port
+                        .port_impl
+                        .take()
+                        .expect("Managed port doesn't have a port-impl.")
+                })
+                .expect("mark_port_as_transferred called on a global not managing the port.");
+            port_impl.set_has_been_shipped();
             let _ = self
                 .script_to_constellation_chan()
                 .send(ScriptMsg::MessagePortShipped(port_id.clone()));
-            port
+            port_impl
         } else {
             panic!("mark_port_as_transferred called on a global not managing any ports.");
         }
@@ -697,12 +769,17 @@ impl GlobalScope {
         if let MessagePortState::Managed(_id, message_ports) =
             &mut *self.message_port_state.borrow_mut()
         {
-            let port = match message_ports.get_mut(&port_id) {
+            let message_buffer = match message_ports.get_mut(&port_id) {
                 None => panic!("start_message_port called on a unknown port."),
-                Some(ManagedMessagePort::Pending(port_impl, _)) => port_impl,
-                Some(ManagedMessagePort::Added(port_impl, _)) => port_impl,
+                Some(managed_port) => {
+                    if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                        port_impl.start()
+                    } else {
+                        panic!("managed-port has no port-impl.");
+                    }
+                },
             };
-            if let Some(message_buffer) = port.start() {
+            if let Some(message_buffer) = message_buffer {
                 for task in message_buffer {
                     let port_id = port_id.clone();
                     let this = Trusted::new(&*self);
@@ -725,12 +802,17 @@ impl GlobalScope {
         if let MessagePortState::Managed(_id, message_ports) =
             &mut *self.message_port_state.borrow_mut()
         {
-            let port = match message_ports.get_mut(&port_id) {
+            match message_ports.get_mut(&port_id) {
                 None => panic!("close_message_port called on an unknown port."),
-                Some(ManagedMessagePort::Pending(port_impl, _)) => port_impl,
-                Some(ManagedMessagePort::Added(port_impl, _)) => port_impl,
+                Some(managed_port) => {
+                    if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                        port_impl.close();
+                        managed_port.closed = true;
+                    } else {
+                        panic!("managed-port has no port-impl.");
+                    }
+                },
             };
-            port.close();
         } else {
             return warn!("close_message_port called on a global not managing any ports.");
         }
@@ -742,12 +824,17 @@ impl GlobalScope {
         if let MessagePortState::Managed(_id, message_ports) =
             &mut *self.message_port_state.borrow_mut()
         {
-            let port = match message_ports.get_mut(&port_id) {
+            let entangled_port = match message_ports.get_mut(&port_id) {
                 None => panic!("post_messageport_msg called on an unknown port."),
-                Some(ManagedMessagePort::Pending(port_impl, _)) => port_impl,
-                Some(ManagedMessagePort::Added(port_impl, _)) => port_impl,
+                Some(managed_port) => {
+                    if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                        port_impl.entangled_port_id()
+                    } else {
+                        panic!("managed-port has no port-impl.");
+                    }
+                },
             };
-            if let Some(entangled_id) = port.entangled_port_id() {
+            if let Some(entangled_id) = entangled_port {
                 // Step 7
                 let this = Trusted::new(&*self);
                 let _ = self.port_message_queue().queue(
@@ -773,6 +860,115 @@ impl GlobalScope {
             .send(ScriptMsg::RerouteMessagePort(port_id, task));
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#dom-broadcastchannel-postmessage>
+    /// Step 7 and following steps.
+    pub fn schedule_broadcast(&self, msg: BroadcastMsg, channel_id: &Uuid) {
+        // First, broadcast locally.
+        self.broadcast_message_event(msg.clone(), Some(channel_id));
+
+        if let BroadcastChannelState::Managed(router_id, _) =
+            &*self.broadcast_channel_state.borrow()
+        {
+            // Second, broadcast to other globals via the constellation.
+            //
+            // Note: for globals in the same script-thread,
+            // we could skip the hop to the constellation.
+            let _ = self
+                .script_to_constellation_chan()
+                .send(ScriptMsg::ScheduleBroadcast(router_id.clone(), msg));
+        } else {
+            panic!("Attemps to broadcast a message via global not managing any channels.");
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-broadcastchannel-postmessage>
+    /// Step 7 and following steps.
+    pub fn broadcast_message_event(&self, event: BroadcastMsg, channel_id: Option<&Uuid>) {
+        if let BroadcastChannelState::Managed(_, channels) = &*self.broadcast_channel_state.borrow()
+        {
+            let BroadcastMsg {
+                data,
+                origin,
+                channel_name,
+            } = event;
+
+            // Step 7, a few preliminary steps.
+
+            // - Check the worker is not closing.
+            if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+                if worker.is_closing() {
+                    return;
+                }
+            }
+
+            // - Check the associated document is fully-active.
+            if let Some(window) = self.downcast::<Window>() {
+                if !window.Document().is_fully_active() {
+                    return;
+                }
+            }
+
+            // - Check for a case-sensitive match for the name of the channel.
+            let channel_name = DOMString::from_string(channel_name);
+
+            if let Some(channels) = channels.get(&channel_name) {
+                channels
+                    .iter()
+                    .filter(|ref channel| {
+                        // Step 8.
+                        // Filter out the sender.
+                        if let Some(id) = channel_id {
+                            channel.id() != id
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|channel| DomRoot::from_ref(&**channel))
+                    // Step 9, sort by creation order,
+                    // done by using a queue to store channels in creation order.
+                    .for_each(|channel| {
+                        let data = data.clone_for_broadcast();
+                        let origin = origin.clone();
+
+                        // Step 10: Queue a task on the DOM manipulation task-source,
+                        // to fire the message event
+                        let channel = Trusted::new(&*channel);
+                        let global = Trusted::new(&*self);
+                        let _ = self.dom_manipulation_task_source().queue(
+                            task!(process_pending_port_messages: move || {
+                                let destination = channel.root();
+                                let global = global.root();
+
+                                // 10.1 Check for closed flag.
+                                if destination.closed() {
+                                    return;
+                                }
+
+                                rooted!(in(*global.get_cx()) let mut message = UndefinedValue());
+
+                                // Step 10.3 StructuredDeserialize(serialized, targetRealm).
+                                if let Ok(ports) = structuredclone::read(&global, data, message.handle_mut()) {
+                                    // Step 10.4, Fire an event named message at destination.
+                                    MessageEvent::dispatch_jsval(
+                                        &*destination.upcast(),
+                                        &global,
+                                        message.handle(),
+                                        Some(&origin.ascii_serialization()),
+                                        None,
+                                        ports,
+                                    );
+                                } else {
+                                    // Step 10.3, fire an event named messageerror at destination.
+                                    MessageEvent::dispatch_error(&*destination.upcast(), &global);
+                                }
+                            }),
+                            &self,
+                        );
+                    });
+            }
+        }
+    }
+
     /// Route the task to be handled by the relevant port.
     pub fn route_task_to_port(&self, port_id: MessagePortId, task: PortMessageTask) {
         let should_dispatch = if let MessagePortState::Managed(_id, message_ports) =
@@ -782,23 +978,19 @@ impl GlobalScope {
                 self.re_route_port_task(port_id, task);
                 return;
             }
-            let (port_impl, dom_port) = match message_ports.get_mut(&port_id) {
+            match message_ports.get_mut(&port_id) {
                 None => panic!("route_task_to_port called for an unknown port."),
-                Some(ManagedMessagePort::Pending(port_impl, dom_port)) => (port_impl, dom_port),
-                Some(ManagedMessagePort::Added(port_impl, dom_port)) => (port_impl, dom_port),
-            };
-
-            // If the port is not enabled yet, or if is awaiting the completion of it's transfer,
-            // the task will be buffered and dispatched upon enablement or completion of the transfer.
-            if let Some(task_to_dispatch) = port_impl.handle_incoming(task) {
-                // Get a corresponding DOM message-port object.
-                let dom_port = match dom_port.root() {
-                    Some(dom_port) => dom_port,
-                    None => panic!("Messageport Gc'ed too early"),
-                };
-                Some((dom_port, task_to_dispatch))
-            } else {
-                None
+                Some(managed_port) => {
+                    // If the port is not enabled yet, or if is awaiting the completion of it's transfer,
+                    // the task will be buffered and dispatched upon enablement or completion of the transfer.
+                    if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                        port_impl.handle_incoming(task).and_then(|to_dispatch| {
+                            Some((DomRoot::from_ref(&*managed_port.dom_port), to_dispatch))
+                        })
+                    } else {
+                        panic!("managed-port has no port-impl.");
+                    }
+                },
             }
         } else {
             self.re_route_port_task(port_id, task);
@@ -833,23 +1025,22 @@ impl GlobalScope {
         {
             let to_be_added: Vec<MessagePortId> = message_ports
                 .iter()
-                .filter_map(|(id, port_info)| match port_info {
-                    ManagedMessagePort::Pending(_, _) => Some(id.clone()),
-                    _ => None,
+                .filter_map(|(id, managed_port)| {
+                    if managed_port.pending {
+                        Some(id.clone())
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             for id in to_be_added.iter() {
-                let (id, port_info) = message_ports
-                    .remove_entry(&id)
+                let managed_port = message_ports
+                    .get_mut(&id)
                     .expect("Collected port-id to match an entry");
-                match port_info {
-                    ManagedMessagePort::Pending(port_impl, dom_port) => {
-                        let new_port_info = ManagedMessagePort::Added(port_impl, dom_port);
-                        let present = message_ports.insert(id, new_port_info);
-                        assert!(present.is_none());
-                    },
-                    _ => panic!("Only pending ports should be found in to_be_added"),
+                if !managed_port.pending {
+                    panic!("Only pending ports should be found in to_be_added")
                 }
+                managed_port.pending = false;
             }
             let _ =
                 self.script_to_constellation_chan()
@@ -869,18 +1060,17 @@ impl GlobalScope {
         {
             let to_be_removed: Vec<MessagePortId> = message_ports
                 .iter()
-                .filter_map(|(id, port_info)| {
-                    if let ManagedMessagePort::Added(_port_impl, dom_port) = port_info {
-                        if dom_port.root().is_none() {
-                            // Let the constellation know to drop this port and the one it is entangled with,
-                            // and to forward this message to the script-process where the entangled is found.
-                            let _ = self
-                                .script_to_constellation_chan()
-                                .send(ScriptMsg::RemoveMessagePort(id.clone()));
-                            return Some(id.clone());
-                        }
+                .filter_map(|(id, ref managed_port)| {
+                    if managed_port.closed {
+                        // Let the constellation know to drop this port and the one it is entangled with,
+                        // and to forward this message to the script-process where the entangled is found.
+                        let _ = self
+                            .script_to_constellation_chan()
+                            .send(ScriptMsg::RemoveMessagePort(id.clone()));
+                        Some(id.clone())
+                    } else {
+                        None
                     }
-                    None
                 })
                 .collect();
             for id in to_be_removed {
@@ -892,6 +1082,93 @@ impl GlobalScope {
         };
         if is_empty {
             self.remove_message_ports_router();
+        }
+    }
+
+    /// Remove broadcast-channels that are closed.
+    /// TODO: Also remove them if they do not have an event-listener.
+    /// see https://github.com/servo/servo/issues/25772
+    pub fn perform_a_broadcast_channel_garbage_collection_checkpoint(&self) {
+        let is_empty = if let BroadcastChannelState::Managed(router_id, ref mut channels) =
+            &mut *self.broadcast_channel_state.borrow_mut()
+        {
+            channels.retain(|name, ref mut channels| {
+                channels.retain(|ref chan| !chan.closed());
+                if channels.is_empty() {
+                    let _ = self.script_to_constellation_chan().send(
+                        ScriptMsg::RemoveBroadcastChannelNameInRouter(
+                            router_id.clone(),
+                            name.to_string(),
+                            self.origin().immutable().clone(),
+                        ),
+                    );
+                    false
+                } else {
+                    true
+                }
+            });
+            channels.is_empty()
+        } else {
+            false
+        };
+        if is_empty {
+            self.remove_broadcast_channel_router();
+        }
+    }
+
+    /// Start tracking a broadcast-channel.
+    pub fn track_broadcast_channel(&self, dom_channel: &BroadcastChannel) {
+        let mut current_state = self.broadcast_channel_state.borrow_mut();
+
+        if let BroadcastChannelState::UnManaged = &*current_state {
+            // Setup a route for IPC, for broadcasts from the constellation to our channels.
+            let (broadcast_control_sender, broadcast_control_receiver) =
+                ipc::channel().expect("ipc channel failure");
+            let context = Trusted::new(self);
+            let (task_source, canceller) = (
+                self.dom_manipulation_task_source(),
+                self.task_canceller(TaskSourceName::DOMManipulation),
+            );
+            let listener = BroadcastListener {
+                canceller,
+                task_source,
+                context,
+            };
+            ROUTER.add_route(
+                broadcast_control_receiver.to_opaque(),
+                Box::new(move |message| {
+                    let msg = message.to();
+                    match msg {
+                        Ok(msg) => listener.handle(msg),
+                        Err(err) => warn!("Error receiving a BroadcastMsg: {:?}", err),
+                    }
+                }),
+            );
+            let router_id = BroadcastChannelRouterId::new();
+            *current_state = BroadcastChannelState::Managed(router_id.clone(), HashMap::new());
+            let _ = self
+                .script_to_constellation_chan()
+                .send(ScriptMsg::NewBroadcastChannelRouter(
+                    router_id,
+                    broadcast_control_sender,
+                    self.origin().immutable().clone(),
+                ));
+        }
+
+        if let BroadcastChannelState::Managed(router_id, channels) = &mut *current_state {
+            let entry = channels.entry(dom_channel.Name()).or_insert_with(|| {
+                let _ = self.script_to_constellation_chan().send(
+                    ScriptMsg::NewBroadcastChannelNameInRouter(
+                        router_id.clone(),
+                        dom_channel.Name().to_string(),
+                        self.origin().immutable().clone(),
+                    ),
+                );
+                VecDeque::new()
+            });
+            entry.push_back(Dom::from_ref(dom_channel));
+        } else {
+            panic!("track_broadcast_channel should have first switched the state to managed.");
         }
     }
 
@@ -940,7 +1217,12 @@ impl GlobalScope {
                 // if they're not re-shipped in the current task.
                 message_ports.insert(
                     dom_port.message_port_id().clone(),
-                    ManagedMessagePort::Pending(port_impl, WeakRef::new(dom_port)),
+                    ManagedMessagePort {
+                        port_impl: Some(port_impl),
+                        dom_port: Dom::from_ref(dom_port),
+                        pending: true,
+                        closed: false,
+                    },
                 );
 
                 // Queue a task to complete the transfer,
@@ -958,7 +1240,12 @@ impl GlobalScope {
                 let port_impl = MessagePortImpl::new(dom_port.message_port_id().clone());
                 message_ports.insert(
                     dom_port.message_port_id().clone(),
-                    ManagedMessagePort::Added(port_impl, WeakRef::new(dom_port)),
+                    ManagedMessagePort {
+                        port_impl: Some(port_impl),
+                        dom_port: Dom::from_ref(dom_port),
+                        pending: false,
+                        closed: false,
+                    },
                 );
                 let _ = self
                     .script_to_constellation_chan()
@@ -1380,8 +1667,7 @@ impl GlobalScope {
         let resource_threads = self.resource_threads();
         let (chan, recv) = profile_ipc::channel(self.time_profiler_chan().clone()).unwrap();
         let origin = get_blob_origin(&self.get_url());
-        let check_url_validity = false;
-        let msg = FileManagerThreadMsg::ReadFile(chan, id, check_url_validity, origin);
+        let msg = FileManagerThreadMsg::ReadFile(chan, id, origin);
         let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));
         recv
     }
@@ -1449,8 +1735,9 @@ impl GlobalScope {
 
     /// Returns the global scope for the given JSContext
     #[allow(unsafe_code)]
-    pub unsafe fn from_context(cx: *mut JSContext) -> DomRoot<Self> {
+    pub unsafe fn from_context(cx: *mut JSContext, _realm: InRealm) -> DomRoot<Self> {
         let global = CurrentGlobalOrNull(cx);
+        assert!(!global.is_null());
         global_scope_from_global(global, cx)
     }
 
@@ -1846,10 +2133,10 @@ impl GlobalScope {
             self.time_profiler_chan().clone(),
             || {
                 let cx = self.get_cx();
-                let globalhandle = self.reflector().get_jsobject();
                 let filename = CString::new(filename).unwrap();
 
-                let _ac = JSAutoRealm::new(*cx, globalhandle.get());
+                let ar = enter_realm(&*self);
+
                 let _aes = AutoEntryScript::new(self);
                 let options = CompileOptionsWrapper::new(*cx, filename.as_ptr(), line_number);
 
@@ -1866,7 +2153,7 @@ impl GlobalScope {
 
                 if !result {
                     debug!("error evaluating Dom string");
-                    unsafe { report_pending_exception(*cx, true) };
+                    unsafe { report_pending_exception(*cx, true, InRealm::Entered(&ar)) };
                 }
 
                 maybe_resume_unwind();
@@ -2134,50 +2421,8 @@ impl GlobalScope {
         None
     }
 
-    pub fn wgpu_create_adapter_ids(&self) -> SmallVec<[AdapterId; 4]> {
-        self.gpu_id_hub.borrow_mut().create_adapter_ids()
-    }
-
-    pub fn wgpu_create_bind_group_id(&self, backend: Backend) -> BindGroupId {
-        self.gpu_id_hub.borrow_mut().create_bind_group_id(backend)
-    }
-
-    pub fn wgpu_create_bind_group_layout_id(&self, backend: Backend) -> BindGroupLayoutId {
-        self.gpu_id_hub
-            .borrow_mut()
-            .create_bind_group_layout_id(backend)
-    }
-
-    pub fn wgpu_create_buffer_id(&self, backend: Backend) -> BufferId {
-        self.gpu_id_hub.borrow_mut().create_buffer_id(backend)
-    }
-
-    pub fn wgpu_create_device_id(&self, backend: Backend) -> DeviceId {
-        self.gpu_id_hub.borrow_mut().create_device_id(backend)
-    }
-
-    pub fn wgpu_create_pipeline_layout_id(&self, backend: Backend) -> PipelineLayoutId {
-        self.gpu_id_hub
-            .borrow_mut()
-            .create_pipeline_layout_id(backend)
-    }
-
-    pub fn wgpu_create_shader_module_id(&self, backend: Backend) -> ShaderModuleId {
-        self.gpu_id_hub
-            .borrow_mut()
-            .create_shader_module_id(backend)
-    }
-
-    pub fn wgpu_create_compute_pipeline_id(&self, backend: Backend) -> ComputePipelineId {
-        self.gpu_id_hub
-            .borrow_mut()
-            .create_compute_pipeline_id(backend)
-    }
-
-    pub fn wgpu_create_command_encoder_id(&self, backend: Backend) -> CommandEncoderId {
-        self.gpu_id_hub
-            .borrow_mut()
-            .create_command_encoder_id(backend)
+    pub fn wgpu_id_hub(&self) -> RefMut<Identities> {
+        self.gpu_id_hub.borrow_mut()
     }
 }
 

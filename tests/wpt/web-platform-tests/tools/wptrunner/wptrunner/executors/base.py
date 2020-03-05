@@ -163,14 +163,18 @@ class TimedRunner(object):
                 self.result = False, ("INTERNAL-ERROR", "%s.run_func didn't set a result" %
                                       self.__class__.__name__)
             else:
-                message = "Executor hit external timeout (this may indicate a hang)\n"
-                # get a traceback for the current stack of the executor thread
-                message += "".join(traceback.format_stack(sys._current_frames()[executor.ident]))
-                self.result = False, ("EXTERNAL-TIMEOUT", message)
+                if self.protocol.is_alive():
+                    message = "Executor hit external timeout (this may indicate a hang)\n"
+                    # get a traceback for the current stack of the executor thread
+                    message += "".join(traceback.format_stack(sys._current_frames()[executor.ident]))
+                    self.result = False, ("EXTERNAL-TIMEOUT", message)
+                else:
+                    self.logger.info("Browser not responding, setting status to CRASH")
+                    self.result = False, ("CRASH", None)
         elif self.result[1] is None:
             # We didn't get any data back from the test, so check if the
             # browser is still responsive
-            if self.protocol.is_alive:
+            if self.protocol.is_alive():
                 self.result = False, ("INTERNAL-ERROR", None)
             else:
                 self.logger.info("Browser not responding, setting status to CRASH")
@@ -271,7 +275,8 @@ class TestExecutor(object):
         self.runner.send_message("test_ended", test, result)
 
     def server_url(self, protocol):
-        return "%s://%s:%s" % (protocol,
+        scheme = "https" if protocol == "h2" else protocol
+        return "%s://%s:%s" % (scheme,
                                self.server_config["browser_host"],
                                self.server_config["ports"][protocol][0])
 
@@ -511,7 +516,7 @@ class WdspecExecutor(TestExecutor):
         self.protocol = self.protocol_cls(self, browser)
 
     def is_alive(self):
-        return self.protocol.is_alive
+        return self.protocol.is_alive()
 
     def on_environment_change(self, new_environment):
         pass
@@ -637,10 +642,9 @@ class WebDriverProtocol(Protocol):
         pass
 
     def teardown(self):
-        if self.server is not None and self.server.is_alive:
+        if self.server is not None and self.server.is_alive():
             self.server.stop()
 
-    @property
     def is_alive(self):
         """Test that the connection is still alive.
 

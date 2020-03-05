@@ -83,8 +83,8 @@ use media::WindowGLContext;
 use metrics::{InteractiveMetrics, InteractiveWindow};
 use mime::Mime;
 use msg::constellation_msg::{
-    BlobId, BrowsingContextId, HistoryStateId, MessagePortId, MessagePortRouterId, PipelineId,
-    TopLevelBrowsingContextId,
+    BlobId, BroadcastChannelRouterId, BrowsingContextId, HistoryStateId, MessagePortId,
+    MessagePortRouterId, PipelineId, TopLevelBrowsingContextId,
 };
 use net_traits::filemanager_thread::RelativePos;
 use net_traits::image::base::{Image, ImageMetadata};
@@ -152,8 +152,8 @@ use tendril::{StrTendril, TendrilSink};
 use time::{Duration, Timespec, Tm};
 use uuid::Uuid;
 use webgpu::{
-    WebGPU, WebGPUAdapter, WebGPUBindGroup, WebGPUBindGroupLayout, WebGPUBuffer,
-    WebGPUCommandBuffer, WebGPUCommandEncoder, WebGPUComputePipeline, WebGPUDevice,
+    wgpu::command::RawPass, WebGPU, WebGPUAdapter, WebGPUBindGroup, WebGPUBindGroupLayout,
+    WebGPUBuffer, WebGPUCommandBuffer, WebGPUCommandEncoder, WebGPUComputePipeline, WebGPUDevice,
     WebGPUPipelineLayout, WebGPUQueue, WebGPUShaderModule,
 };
 use webrender_api::{DocumentId, ImageKey};
@@ -174,6 +174,8 @@ unsafe_no_jsmanaged_fields!(MessagePortImpl);
 unsafe_no_jsmanaged_fields!(MessagePortId);
 unsafe_no_jsmanaged_fields!(RefCell<Option<MessagePortId>>);
 unsafe_no_jsmanaged_fields!(MessagePortRouterId);
+
+unsafe_no_jsmanaged_fields!(BroadcastChannelRouterId);
 
 unsafe_no_jsmanaged_fields!(BlobId);
 unsafe_no_jsmanaged_fields!(BlobImpl);
@@ -542,7 +544,7 @@ unsafe_no_jsmanaged_fields!(WebGPUShaderModule);
 unsafe_no_jsmanaged_fields!(WebGPUCommandBuffer);
 unsafe_no_jsmanaged_fields!(WebGPUCommandEncoder);
 unsafe_no_jsmanaged_fields!(WebGPUDevice);
-unsafe_no_jsmanaged_fields!(webgpu::wgpu::command::RawPass);
+unsafe_no_jsmanaged_fields!(RefCell<Option<RawPass>>);
 unsafe_no_jsmanaged_fields!(GPUBufferState);
 unsafe_no_jsmanaged_fields!(WebXRSwapChainId);
 unsafe_no_jsmanaged_fields!(MediaList);

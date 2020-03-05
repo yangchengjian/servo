@@ -7,7 +7,7 @@ use crate::flow::float::FloatBox;
 use crate::flow::FlowLayout;
 use crate::formatting_contexts::IndependentFormattingContext;
 use crate::fragments::CollapsedBlockMargins;
-use crate::fragments::{AnonymousFragment, BoxFragment, Fragment, TextFragment};
+use crate::fragments::{AnonymousFragment, BoxFragment, DebugId, Fragment, TextFragment};
 use crate::geom::flow_relative::{Rect, Sides, Vec2};
 use crate::positioned::{relative_adjustement, AbsolutelyPositionedBox, PositioningContext};
 use crate::sizing::ContentSizes;
@@ -23,12 +23,12 @@ use style::values::specified::text::TextAlignKeyword;
 use style::Zero;
 use webrender_api::FontInstanceKey;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub(crate) struct InlineFormattingContext {
     pub(super) inline_level_boxes: Vec<Arc<InlineLevelBox>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) enum InlineLevelBox {
     InlineBox(InlineBox),
     TextRun(TextRun),
@@ -37,9 +37,10 @@ pub(crate) enum InlineLevelBox {
     Atomic(IndependentFormattingContext),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) struct InlineBox {
     pub tag: OpaqueNode,
+    #[serde(skip_serializing)]
     pub style: Arc<ComputedValues>,
     pub first_fragment: bool,
     pub last_fragment: bool,
@@ -47,9 +48,10 @@ pub(crate) struct InlineBox {
 }
 
 /// https://www.w3.org/TR/css-display-3/#css-text-run
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(crate) struct TextRun {
     pub tag: OpaqueNode,
+    #[serde(skip_serializing)]
     pub parent_style: Arc<ComputedValues>,
     pub text: String,
 }
@@ -253,7 +255,7 @@ impl InlineFormattingContext {
                                 },
                             };
                         ifc.positioning_context
-                            .push(box_.layout(initial_start_corner, tree_rank));
+                            .push(box_.to_hoisted(initial_start_corner, tree_rank));
                     },
                     InlineLevelBox::OutOfFlowFloatBox(_box_) => {
                         // TODO
@@ -565,7 +567,10 @@ fn layout_atomic<'box_tree>(
         },
     };
 
-    ifc.inline_position += pbm.inline_end;
+    ifc.inline_position += pbm.inline_end + fragment.content_rect.size.inline;
+    ifc.current_nesting_level
+        .max_block_size_of_fragments_so_far
+        .max_assign(pbm.block_sum() + fragment.content_rect.size.block);
     ifc.current_nesting_level
         .fragments_so_far
         .push(Fragment::Box(fragment));
@@ -713,6 +718,7 @@ impl TextRun {
                 .fragments_so_far
                 .push(Fragment::Text(TextFragment {
                     tag: self.tag,
+                    debug_id: DebugId::new(),
                     parent_style: self.parent_style.clone(),
                     rect,
                     ascent: font_ascent.into(),

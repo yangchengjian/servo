@@ -18,19 +18,19 @@ pub type PhysicalRect<U> = euclid::Rect<U, CSSPixel>;
 pub type PhysicalSides<U> = euclid::SideOffsets2D<U, CSSPixel>;
 
 pub(crate) mod flow_relative {
-    #[derive(Clone)]
+    #[derive(Clone, Serialize)]
     pub(crate) struct Vec2<T> {
         pub inline: T,
         pub block: T,
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Serialize)]
     pub(crate) struct Rect<T> {
         pub start_corner: Vec2<T>,
         pub size: Vec2<T>,
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Serialize)]
     pub(crate) struct Sides<T> {
         pub inline_start: T,
         pub inline_end: T,
@@ -351,44 +351,6 @@ impl<T> flow_relative::Rect<T> {
         PhysicalRect::new(
             PhysicalPoint::new(tl_x.clone(), tl_y.clone()),
             self.size.to_physical(mode),
-        )
-    }
-}
-
-pub trait ToWebRender {
-    type Type;
-    fn to_webrender(&self) -> Self::Type;
-}
-
-impl ToWebRender for PhysicalPoint<Length> {
-    type Type = webrender_api::units::LayoutPoint;
-    fn to_webrender(&self) -> Self::Type {
-        webrender_api::units::LayoutPoint::new(self.x.px(), self.y.px())
-    }
-}
-
-impl ToWebRender for PhysicalSize<Length> {
-    type Type = webrender_api::units::LayoutSize;
-    fn to_webrender(&self) -> Self::Type {
-        webrender_api::units::LayoutSize::new(self.width.px(), self.height.px())
-    }
-}
-
-impl ToWebRender for PhysicalRect<Length> {
-    type Type = webrender_api::units::LayoutRect;
-    fn to_webrender(&self) -> Self::Type {
-        webrender_api::units::LayoutRect::new(self.origin.to_webrender(), self.size.to_webrender())
-    }
-}
-
-impl ToWebRender for PhysicalSides<Length> {
-    type Type = webrender_api::units::LayoutSideOffsets;
-    fn to_webrender(&self) -> Self::Type {
-        webrender_api::units::LayoutSideOffsets::new(
-            self.top.px(),
-            self.right.px(),
-            self.bottom.px(),
-            self.left.px(),
         )
     }
 }

@@ -27,8 +27,6 @@ winapi = {version = "0.3", features = ["wingdi", "winuser", "winnt", "winbase", 
 cbindgen = "0.9"
 
 [features]
-canvas2d-azure = ["simpleservo/canvas2d-azure"]
-canvas2d-raqote = ["simpleservo/canvas2d-raqote"]
 debugmozjs = ["simpleservo/debugmozjs"]
 default = ["webdriver", "max_log_level"]
 media-dummy = ["simpleservo/media-dummy"]
@@ -48,3 +46,5 @@ refcell_backtrace = ["simpleservo/refcell_backtrace"]
 uwp = ["simpleservo/uwp"]
 webdriver = ["simpleservo/webdriver"]
 webgl_backtrace = ["simpleservo/webgl_backtrace"]
+vslatestinstalled = ["simpleservo/vslatestinstalled"]
+xr-profile = ["simpleservo/xr-profile"]

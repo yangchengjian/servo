@@ -17,7 +17,7 @@ use crate::dom::gpucomputepassencoder::GPUComputePassEncoder;
 use dom_struct::dom_struct;
 use ipc_channel::ipc;
 use std::collections::HashSet;
-use webgpu::{wgpu::command::RawPass, WebGPU, WebGPUCommandEncoder, WebGPURequest};
+use webgpu::{WebGPU, WebGPUCommandEncoder, WebGPURequest};
 
 #[dom_struct]
 pub struct GPUCommandEncoder {
@@ -69,11 +69,7 @@ impl GPUCommandEncoderMethods for GPUCommandEncoder {
         &self,
         _descriptor: &GPUComputePassDescriptor,
     ) -> DomRoot<GPUComputePassEncoder> {
-        GPUComputePassEncoder::new(
-            &self.global(),
-            self.channel.clone(),
-            RawPass::new_compute(self.encoder.0),
-        )
+        GPUComputePassEncoder::new(&self.global(), self.channel.clone(), self.encoder)
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpucommandencoder-copybuffertobuffer
@@ -91,14 +87,14 @@ impl GPUCommandEncoderMethods for GPUCommandEncoder {
             .insert(DomRoot::from_ref(destination));
         self.channel
             .0
-            .send(WebGPURequest::CopyBufferToBuffer(
-                self.encoder.0,
-                source.id().0,
+            .send(WebGPURequest::CopyBufferToBuffer {
+                command_encoder_id: self.encoder.0,
+                source_id: source.id().0,
                 source_offset,
-                destination.id().0,
+                destination_id: destination.id().0,
                 destination_offset,
                 size,
-            ))
+            })
             .expect("Failed to send CopyBufferToBuffer");
     }
 
@@ -107,12 +103,12 @@ impl GPUCommandEncoderMethods for GPUCommandEncoder {
         let (sender, receiver) = ipc::channel().unwrap();
         self.channel
             .0
-            .send(WebGPURequest::CommandEncoderFinish(
+            .send(WebGPURequest::CommandEncoderFinish {
                 sender,
-                self.encoder.0,
+                command_encoder_id: self.encoder.0,
                 // TODO(zakorgy): We should use `_descriptor` here after it's not empty
                 // and the underlying wgpu-core struct is serializable
-            ))
+            })
             .expect("Failed to send Finish");
 
         let buffer = receiver.recv().unwrap();

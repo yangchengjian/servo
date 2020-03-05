@@ -93,7 +93,7 @@ use servo_atoms::Atom;
 use servo_config::opts;
 use servo_config::pref;
 use servo_geometry::MaxRect;
-use servo_url::ServoUrl;
+use servo_url::{ImmutableOrigin, ServoUrl};
 use std::borrow::ToOwned;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -159,7 +159,7 @@ pub struct LayoutThread {
     font_cache_sender: IpcSender<()>,
 
     /// A means of communication with the background hang monitor.
-    background_hang_monitor: Box<dyn BackgroundHangMonitor>,
+    background_hang_monitor: Option<Box<dyn BackgroundHangMonitor>>,
 
     /// The channel on which messages can be sent to the constellation.
     constellation_chan: IpcSender<ConstellationMsg>,
@@ -292,7 +292,7 @@ impl LayoutThreadFactory for LayoutThread {
         is_iframe: bool,
         chan: (Sender<Msg>, Receiver<Msg>),
         pipeline_port: IpcReceiver<LayoutControlMsg>,
-        background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
+        background_hang_monitor_register: Option<Box<dyn BackgroundHangMonitorRegister>>,
         constellation_chan: IpcSender<ConstellationMsg>,
         script_chan: IpcSender<ConstellationControlMsg>,
         image_cache: Arc<dyn ImageCache>,
@@ -326,12 +326,13 @@ impl LayoutThreadFactory for LayoutThread {
                     // Ensures layout thread is destroyed before we send shutdown message
                     let sender = chan.0;
 
-                    let background_hang_monitor = background_hang_monitor_register
-                        .register_component(
+                    let background_hang_monitor = background_hang_monitor_register.map(|bhm| {
+                        bhm.register_component(
                             MonitoredComponentId(id, MonitoredComponentType::Layout),
                             Duration::from_millis(1000),
                             Duration::from_millis(5000),
-                        );
+                        )
+                    });
 
                     let layout = LayoutThread::new(
                         id,
@@ -510,7 +511,7 @@ impl LayoutThread {
         is_iframe: bool,
         port: Receiver<Msg>,
         pipeline_port: IpcReceiver<LayoutControlMsg>,
-        background_hang_monitor: Box<dyn BackgroundHangMonitor>,
+        background_hang_monitor: Option<Box<dyn BackgroundHangMonitor>>,
         constellation_chan: IpcSender<ConstellationMsg>,
         script_chan: IpcSender<ConstellationControlMsg>,
         image_cache: Arc<dyn ImageCache>,
@@ -644,13 +645,14 @@ impl LayoutThread {
         guards: StylesheetGuards<'a>,
         script_initiated_layout: bool,
         snapshot_map: &'a SnapshotMap,
+        origin: ImmutableOrigin,
     ) -> LayoutContext<'a> {
         let thread_local_style_context_creation_data =
             ThreadLocalStyleContextCreationInfo::new(self.new_animations_sender.clone());
 
         LayoutContext {
             id: self.id,
-            origin: self.url.origin(),
+            origin,
             style_context: SharedStyleContext {
                 stylist: &self.stylist,
                 options: GLOBAL_STYLE_DATA.options.clone(),
@@ -688,7 +690,7 @@ impl LayoutThread {
             Msg::SetQuirksMode(..) => LayoutHangAnnotation::SetQuirksMode,
             Msg::Reflow(..) => LayoutHangAnnotation::Reflow,
             Msg::GetRPC(..) => LayoutHangAnnotation::GetRPC,
-            Msg::TickAnimations => LayoutHangAnnotation::TickAnimations,
+            Msg::TickAnimations(..) => LayoutHangAnnotation::TickAnimations,
             Msg::AdvanceClockMs(..) => LayoutHangAnnotation::AdvanceClockMs,
             Msg::ReapStyleAndLayoutData(..) => LayoutHangAnnotation::ReapStyleAndLayoutData,
             Msg::CollectReports(..) => LayoutHangAnnotation::CollectReports,
@@ -707,7 +709,8 @@ impl LayoutThread {
             Msg::GetRunningAnimations(..) => LayoutHangAnnotation::GetRunningAnimations,
         };
         self.background_hang_monitor
-            .notify_activity(HangAnnotation::Layout(hang_annotation));
+            .as_ref()
+            .map(|bhm| bhm.notify_activity(HangAnnotation::Layout(hang_annotation)));
     }
 
     /// Receives and dispatches messages from the script and constellation threads
@@ -719,7 +722,9 @@ impl LayoutThread {
         }
 
         // Notify the background-hang-monitor we are waiting for an event.
-        self.background_hang_monitor.notify_wait();
+        self.background_hang_monitor
+            .as_ref()
+            .map(|bhm| bhm.notify_wait());
 
         let request = select! {
             recv(self.pipeline_port) -> msg => Request::FromPipeline(msg.unwrap()),
@@ -734,8 +739,8 @@ impl LayoutThread {
                     Msg::SetScrollStates(new_scroll_states),
                     possibly_locked_rw_data,
                 ),
-            Request::FromPipeline(LayoutControlMsg::TickAnimations) => {
-                self.handle_request_helper(Msg::TickAnimations, possibly_locked_rw_data)
+            Request::FromPipeline(LayoutControlMsg::TickAnimations(origin)) => {
+                self.handle_request_helper(Msg::TickAnimations(origin), possibly_locked_rw_data)
             },
             Request::FromPipeline(LayoutControlMsg::GetCurrentEpoch(sender)) => {
                 self.handle_request_helper(Msg::GetCurrentEpoch(sender), possibly_locked_rw_data)
@@ -808,7 +813,9 @@ impl LayoutThread {
                     || self.handle_reflow(&mut data, possibly_locked_rw_data),
                 );
             },
-            Msg::TickAnimations => self.tick_all_animations(possibly_locked_rw_data),
+            Msg::TickAnimations(origin) => {
+                self.tick_all_animations(possibly_locked_rw_data, origin)
+            },
             Msg::SetScrollStates(new_scroll_states) => {
                 self.set_scroll_states(new_scroll_states, possibly_locked_rw_data);
             },
@@ -836,8 +843,8 @@ impl LayoutThread {
                 let _rw_data = possibly_locked_rw_data.lock();
                 sender.send(self.epoch.get()).unwrap();
             },
-            Msg::AdvanceClockMs(how_many, do_tick) => {
-                self.handle_advance_clock_ms(how_many, possibly_locked_rw_data, do_tick);
+            Msg::AdvanceClockMs(how_many, do_tick, origin) => {
+                self.handle_advance_clock_ms(how_many, possibly_locked_rw_data, do_tick, origin);
             },
             Msg::GetWebFontLoadState(sender) => {
                 let _rw_data = possibly_locked_rw_data.lock();
@@ -992,7 +999,9 @@ impl LayoutThread {
         );
 
         self.root_flow.borrow_mut().take();
-        self.background_hang_monitor.unregister();
+        self.background_hang_monitor
+            .as_ref()
+            .map(|bhm| bhm.unregister());
     }
 
     fn handle_add_stylesheet(&self, stylesheet: &Stylesheet, guard: &SharedRwLockReadGuard) {
@@ -1017,10 +1026,11 @@ impl LayoutThread {
         how_many_ms: i32,
         possibly_locked_rw_data: &mut RwData<'a, 'b>,
         tick_animations: bool,
+        origin: ImmutableOrigin,
     ) {
         self.timer.increment(how_many_ms as f64 / 1000.0);
         if tick_animations {
-            self.tick_all_animations(possibly_locked_rw_data);
+            self.tick_all_animations(possibly_locked_rw_data, origin);
         }
     }
 
@@ -1341,6 +1351,8 @@ impl LayoutThread {
             Au::from_f32_px(initial_viewport.height),
         );
 
+        let origin = data.origin.clone();
+
         // Calculate the actual viewport as per DEVICE-ADAPT § 6
         // If the entire flow tree is invalid, then it will be reflowed anyhow.
         let document_shared_lock = document.style_shared_lock();
@@ -1482,7 +1494,7 @@ impl LayoutThread {
         self.stylist.flush(&guards, Some(element), Some(&map));
 
         // Create a layout context for use throughout the following passes.
-        let mut layout_context = self.build_layout_context(guards.clone(), true, &map);
+        let mut layout_context = self.build_layout_context(guards.clone(), true, &map, origin);
 
         let pool;
         let (thread_pool, num_threads) = if self.parallel_flag {
@@ -1710,12 +1722,16 @@ impl LayoutThread {
         rw_data.scroll_offsets = layout_scroll_states
     }
 
-    fn tick_all_animations<'a, 'b>(&mut self, possibly_locked_rw_data: &mut RwData<'a, 'b>) {
+    fn tick_all_animations<'a, 'b>(
+        &mut self,
+        possibly_locked_rw_data: &mut RwData<'a, 'b>,
+        origin: ImmutableOrigin,
+    ) {
         let mut rw_data = possibly_locked_rw_data.lock();
-        self.tick_animations(&mut rw_data);
+        self.tick_animations(&mut rw_data, origin);
     }
 
-    fn tick_animations(&mut self, rw_data: &mut LayoutThreadData) {
+    fn tick_animations(&mut self, rw_data: &mut LayoutThreadData, origin: ImmutableOrigin) {
         if self.relayout_event {
             println!(
                 "**** pipeline={}\tForDisplay\tSpecial\tAnimationTick",
@@ -1738,7 +1754,7 @@ impl LayoutThread {
                 ua_or_user: &ua_or_user_guard,
             };
             let snapshots = SnapshotMap::new();
-            let mut layout_context = self.build_layout_context(guards, false, &snapshots);
+            let mut layout_context = self.build_layout_context(guards, false, &snapshots, origin);
 
             let invalid_nodes = {
                 // Perform an abbreviated style recalc that operates without access to the DOM.

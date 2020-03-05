@@ -16,7 +16,7 @@ bench = false
 [dependencies]
 android_injected_glue = "0.2"
 android_logger = "0.7"
-gstreamer = "0.14.5"
+gstreamer = "0.15"
 jni = "0.10.2"
 libc = "0.2"
 log = "0.4"
@@ -27,8 +27,6 @@ simpleservo = { path = "../api" }
 cc = "1.0"
 
 [features]
-canvas2d-azure = ["simpleservo/canvas2d-azure"]
-canvas2d-raqote = ["simpleservo/canvas2d-raqote"]
 debugmozjs = ["simpleservo/debugmozjs"]
 default = ["webdriver", "max_log_level"]
 media-dummy = ["simpleservo/media-dummy"]

@@ -673,7 +673,7 @@ impl WindowMethods for Window {
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-opener
-    fn Opener(&self, cx: JSContext) -> JSVal {
+    fn Opener(&self, cx: JSContext, in_realm_proof: InRealm) -> JSVal {
         // Step 1, Let current be this Window object's browsing context.
         let current = match self.window_proxy.get() {
             Some(proxy) => proxy,
@@ -688,7 +688,7 @@ impl WindowMethods for Window {
             return NullValue();
         }
         // Step 3 to 5.
-        current.opener(*cx)
+        current.opener(*cx, in_realm_proof)
     }
 
     #[allow(unsafe_code)]
@@ -1403,10 +1403,12 @@ impl Window {
         // We tear down the active document, which causes all the attached
         // nodes to dispose of their layout data. This messages the layout
         // thread, informing it that it can safely free the memory.
-        self.Document().upcast::<Node>().teardown();
+        self.Document()
+            .upcast::<Node>()
+            .teardown(self.layout_chan());
 
-        // Tell the constellation to drop the sender to our message-port router, if there is any.
-        self.upcast::<GlobalScope>().remove_message_ports_router();
+        // Remove the infra for managing messageports and broadcast channels.
+        self.upcast::<GlobalScope>().remove_web_messaging_infra();
 
         // Clean up any active promises
         // https://github.com/servo/servo/issues/15318
@@ -1548,7 +1550,11 @@ impl Window {
     /// forces a reflow if `tick` is true.
     pub fn advance_animation_clock(&self, delta: i32, tick: bool) {
         self.layout_chan
-            .send(Msg::AdvanceClockMs(delta, tick))
+            .send(Msg::AdvanceClockMs(
+                delta,
+                tick,
+                self.origin().immutable().clone(),
+            ))
             .unwrap();
     }
 
@@ -1622,6 +1628,7 @@ impl Window {
             document: self.Document().upcast::<Node>().to_trusted_node_address(),
             stylesheets_changed,
             window_size: self.window_size.get(),
+            origin: self.origin().immutable().clone(),
             reflow_goal,
             script_join_chan: join_chan,
             dom_count: self.Document().dom_count(),
@@ -1982,7 +1989,7 @@ impl Window {
                             .task_canceller(TaskSourceName::DOMManipulation)
                             .wrap_task(task),
                     ),
-                    self.pipeline_id(),
+                    Some(self.pipeline_id()),
                     TaskSourceName::DOMManipulation,
                 ));
                 doc.set_url(load_data.url.clone());
@@ -2348,8 +2355,8 @@ impl Window {
         unsafe { WindowBinding::Wrap(JSContext::from_ptr(runtime.cx()), win) }
     }
 
-    pub fn pipeline_id(&self) -> Option<PipelineId> {
-        Some(self.upcast::<GlobalScope>().pipeline_id())
+    pub fn pipeline_id(&self) -> PipelineId {
+        self.upcast::<GlobalScope>().pipeline_id()
     }
 }
 
@@ -2480,7 +2487,7 @@ impl Window {
                     .task_canceller(TaskSourceName::DOMManipulation)
                     .wrap_task(task),
             ),
-            self.pipeline_id(),
+            Some(self.pipeline_id()),
             TaskSourceName::DOMManipulation,
         ));
     }

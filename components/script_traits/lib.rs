@@ -21,7 +21,7 @@ pub mod serializable;
 pub mod transferable;
 pub mod webdriver_msg;
 
-use crate::serializable::BlobImpl;
+use crate::serializable::{BlobData, BlobImpl};
 use crate::transferable::MessagePortImpl;
 use crate::webdriver_msg::{LoadStatus, WebDriverScriptCommand};
 use bluetooth_traits::BluetoothRequest;
@@ -124,7 +124,7 @@ pub enum LayoutControlMsg {
     /// Requests the current epoch (layout counter) from this layout.
     GetCurrentEpoch(IpcSender<Epoch>),
     /// Asks layout to run another step in its animation.
-    TickAnimations,
+    TickAnimations(ImmutableOrigin),
     /// Tells layout about the new scrolling offsets of each scrollable stacking context.
     SetScrollStates(Vec<ScrollState>),
     /// Requests the current load state of Web fonts. `true` is returned if fonts are still loading
@@ -644,7 +644,7 @@ pub struct InitialScriptState {
     /// A channel on which messages can be sent to the constellation from script.
     pub script_to_constellation_chan: ScriptToConstellationChan,
     /// A handle to register script-(and associated layout-)threads for hang monitoring.
-    pub background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
+    pub background_hang_monitor_register: Option<Box<dyn BackgroundHangMonitorRegister>>,
     /// A sender for the layout thread to communicate to the constellation.
     pub layout_to_constellation_chan: IpcSender<LayoutMsg>,
     /// A channel to schedule timer events.
@@ -955,6 +955,48 @@ pub struct StructuredSerializedData {
     pub ports: Option<HashMap<MessagePortId, MessagePortImpl>>,
 }
 
+impl StructuredSerializedData {
+    /// Clone the serialized data for use with broadcast-channels.
+    pub fn clone_for_broadcast(&self) -> StructuredSerializedData {
+        let serialized = self.serialized.clone();
+
+        let blobs = if let Some(blobs) = self.blobs.as_ref() {
+            let mut blob_clones = HashMap::with_capacity(blobs.len());
+
+            for (original_id, blob) in blobs.iter() {
+                let type_string = blob.type_string();
+
+                if let BlobData::Memory(ref bytes) = blob.blob_data() {
+                    let blob_clone = BlobImpl::new_from_bytes(bytes.clone(), type_string);
+
+                    // Note: we insert the blob at the original id,
+                    // otherwise this will not match the storage key as serialized by SM in `serialized`.
+                    // The clone has it's own new Id however.
+                    blob_clones.insert(original_id.clone(), blob_clone);
+                } else {
+                    // Not panicking only because this is called from the constellation.
+                    warn!("Serialized blob not in memory format(should never happen).");
+                }
+            }
+            Some(blob_clones)
+        } else {
+            None
+        };
+
+        if self.ports.is_some() {
+            // Not panicking only because this is called from the constellation.
+            warn!("Attempt to broadcast structured serialized data including ports(should never happen).");
+        }
+
+        StructuredSerializedData {
+            serialized,
+            blobs,
+            // Ports cannot be broadcast.
+            ports: None,
+        }
+    }
+}
+
 /// A task on the https://html.spec.whatwg.org/multipage/#port-message-queue
 #[derive(Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct PortMessageTask {
@@ -977,6 +1019,27 @@ pub enum MessagePortMsg {
     RemoveMessagePort(MessagePortId),
     /// Handle a new port-message-task.
     NewTask(MessagePortId, PortMessageTask),
+}
+
+/// Message for communication between the constellation and a global managing broadcast channels.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BroadcastMsg {
+    /// The origin of this message.
+    pub origin: ImmutableOrigin,
+    /// The name of the channel.
+    pub channel_name: String,
+    /// A data-holder for serialized data.
+    pub data: StructuredSerializedData,
+}
+
+impl Clone for BroadcastMsg {
+    fn clone(&self) -> BroadcastMsg {
+        BroadcastMsg {
+            data: self.data.clone_for_broadcast(),
+            origin: self.origin.clone(),
+            channel_name: self.channel_name.clone(),
+        }
+    }
 }
 
 /// The type of MediaSession action.

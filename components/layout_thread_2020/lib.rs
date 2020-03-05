@@ -36,6 +36,7 @@ use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 use ipc_channel::router::ROUTER;
 use layout::context::LayoutContext;
 use layout::display_list::{DisplayListBuilder, WebRenderImageInfo};
+use layout::layout_debug;
 use layout::query::{
     process_content_box_request, process_content_boxes_request, LayoutRPCImpl, LayoutThreadData,
 };
@@ -74,7 +75,7 @@ use servo_arc::Arc as ServoArc;
 use servo_atoms::Atom;
 use servo_config::opts;
 use servo_config::pref;
-use servo_url::ServoUrl;
+use servo_url::{ImmutableOrigin, ServoUrl};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -137,7 +138,7 @@ pub struct LayoutThread {
     font_cache_sender: IpcSender<()>,
 
     /// A means of communication with the background hang monitor.
-    background_hang_monitor: Box<dyn BackgroundHangMonitor>,
+    background_hang_monitor: Option<Box<dyn BackgroundHangMonitor>>,
 
     /// The channel on which messages can be sent to the script thread.
     script_chan: IpcSender<ConstellationControlMsg>,
@@ -172,10 +173,10 @@ pub struct LayoutThread {
     outstanding_web_fonts: Arc<AtomicUsize>,
 
     /// The root of the box tree.
-    box_tree_root: RefCell<Option<BoxTreeRoot>>,
+    box_tree_root: RefCell<Option<Arc<BoxTreeRoot>>>,
 
     /// The root of the fragment tree.
-    fragment_tree_root: RefCell<Option<FragmentTreeRoot>>,
+    fragment_tree_root: RefCell<Option<Arc<FragmentTreeRoot>>>,
 
     /// The document-specific shared lock used for author-origin stylesheets
     document_shared_lock: Option<SharedRwLock>,
@@ -234,6 +235,10 @@ pub struct LayoutThread {
 
     /// Emits notifications when there is a relayout.
     relayout_event: bool,
+
+    /// True if each step of layout is traced to an external JSON file
+    /// for debugging purposes.
+    trace_layout: bool,
 }
 
 impl LayoutThreadFactory for LayoutThread {
@@ -247,7 +252,7 @@ impl LayoutThreadFactory for LayoutThread {
         is_iframe: bool,
         chan: (Sender<Msg>, Receiver<Msg>),
         pipeline_port: IpcReceiver<LayoutControlMsg>,
-        background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
+        background_hang_monitor_register: Option<Box<dyn BackgroundHangMonitorRegister>>,
         constellation_chan: IpcSender<ConstellationMsg>,
         script_chan: IpcSender<ConstellationControlMsg>,
         image_cache: Arc<dyn ImageCache>,
@@ -266,7 +271,7 @@ impl LayoutThreadFactory for LayoutThread {
         dump_rule_tree: bool,
         relayout_event: bool,
         _nonincremental_layout: bool,
-        _trace_layout: bool,
+        trace_layout: bool,
         dump_flow_tree: bool,
     ) {
         thread::Builder::new()
@@ -281,12 +286,13 @@ impl LayoutThreadFactory for LayoutThread {
                     // Ensures layout thread is destroyed before we send shutdown message
                     let sender = chan.0;
 
-                    let background_hang_monitor = background_hang_monitor_register
-                        .register_component(
+                    let background_hang_monitor = background_hang_monitor_register.map(|bhm| {
+                        bhm.register_component(
                             MonitoredComponentId(id, MonitoredComponentType::Layout),
                             Duration::from_millis(1000),
                             Duration::from_millis(5000),
-                        );
+                        )
+                    });
 
                     let layout = LayoutThread::new(
                         id,
@@ -314,6 +320,7 @@ impl LayoutThreadFactory for LayoutThread {
                         dump_style_tree,
                         dump_rule_tree,
                         dump_flow_tree,
+                        trace_layout,
                     );
 
                     let reporter_name = format!("layout-reporter-{}", id);
@@ -463,7 +470,7 @@ impl LayoutThread {
         is_iframe: bool,
         port: Receiver<Msg>,
         pipeline_port: IpcReceiver<LayoutControlMsg>,
-        background_hang_monitor: Box<dyn BackgroundHangMonitor>,
+        background_hang_monitor: Option<Box<dyn BackgroundHangMonitor>>,
         constellation_chan: IpcSender<ConstellationMsg>,
         script_chan: IpcSender<ConstellationControlMsg>,
         image_cache: Arc<dyn ImageCache>,
@@ -482,6 +489,7 @@ impl LayoutThread {
         dump_style_tree: bool,
         dump_rule_tree: bool,
         dump_flow_tree: bool,
+        trace_layout: bool,
     ) -> LayoutThread {
         // Let webrender know about this pipeline by sending an empty display list.
         webrender_api_sender.send_initial_transaction(webrender_document, id.to_webrender());
@@ -567,6 +575,7 @@ impl LayoutThread {
             dump_style_tree,
             dump_rule_tree,
             dump_flow_tree,
+            trace_layout,
         }
     }
 
@@ -589,13 +598,14 @@ impl LayoutThread {
         guards: StylesheetGuards<'a>,
         script_initiated_layout: bool,
         snapshot_map: &'a SnapshotMap,
+        origin: ImmutableOrigin,
     ) -> LayoutContext<'a> {
         let thread_local_style_context_creation_data =
             ThreadLocalStyleContextCreationInfo::new(self.new_animations_sender.clone());
 
         LayoutContext {
             id: self.id,
-            origin: self.url.origin(),
+            origin,
             style_context: SharedStyleContext {
                 stylist: &self.stylist,
                 options: GLOBAL_STYLE_DATA.options.clone(),
@@ -628,7 +638,7 @@ impl LayoutThread {
             Msg::SetQuirksMode(..) => LayoutHangAnnotation::SetQuirksMode,
             Msg::Reflow(..) => LayoutHangAnnotation::Reflow,
             Msg::GetRPC(..) => LayoutHangAnnotation::GetRPC,
-            Msg::TickAnimations => LayoutHangAnnotation::TickAnimations,
+            Msg::TickAnimations(..) => LayoutHangAnnotation::TickAnimations,
             Msg::AdvanceClockMs(..) => LayoutHangAnnotation::AdvanceClockMs,
             Msg::ReapStyleAndLayoutData(..) => LayoutHangAnnotation::ReapStyleAndLayoutData,
             Msg::CollectReports(..) => LayoutHangAnnotation::CollectReports,
@@ -647,7 +657,8 @@ impl LayoutThread {
             Msg::GetRunningAnimations(..) => LayoutHangAnnotation::GetRunningAnimations,
         };
         self.background_hang_monitor
-            .notify_activity(HangAnnotation::Layout(hang_annotation));
+            .as_ref()
+            .map(|bhm| bhm.notify_activity(HangAnnotation::Layout(hang_annotation)));
     }
 
     /// Receives and dispatches messages from the script and constellation threads
@@ -659,7 +670,9 @@ impl LayoutThread {
         }
 
         // Notify the background-hang-monitor we are waiting for an event.
-        self.background_hang_monitor.notify_wait();
+        self.background_hang_monitor
+            .as_ref()
+            .map(|bhm| bhm.notify_wait());
 
         let request = select! {
             recv(self.pipeline_port) -> msg => Request::FromPipeline(msg.unwrap()),
@@ -674,8 +687,8 @@ impl LayoutThread {
                     Msg::SetScrollStates(new_scroll_states),
                     possibly_locked_rw_data,
                 ),
-            Request::FromPipeline(LayoutControlMsg::TickAnimations) => {
-                self.handle_request_helper(Msg::TickAnimations, possibly_locked_rw_data)
+            Request::FromPipeline(LayoutControlMsg::TickAnimations(origin)) => {
+                self.handle_request_helper(Msg::TickAnimations(origin), possibly_locked_rw_data)
             },
             Request::FromPipeline(LayoutControlMsg::GetCurrentEpoch(sender)) => {
                 self.handle_request_helper(Msg::GetCurrentEpoch(sender), possibly_locked_rw_data)
@@ -748,7 +761,7 @@ impl LayoutThread {
                     || self.handle_reflow(&mut data, possibly_locked_rw_data),
                 );
             },
-            Msg::TickAnimations => self.tick_all_animations(),
+            Msg::TickAnimations(origin) => self.tick_all_animations(origin),
             Msg::SetScrollStates(new_scroll_states) => {
                 self.set_scroll_states(new_scroll_states, possibly_locked_rw_data);
             },
@@ -776,8 +789,8 @@ impl LayoutThread {
                 let _rw_data = possibly_locked_rw_data.lock();
                 sender.send(self.epoch.get()).unwrap();
             },
-            Msg::AdvanceClockMs(how_many, do_tick) => {
-                self.handle_advance_clock_ms(how_many, do_tick);
+            Msg::AdvanceClockMs(how_many, do_tick, origin) => {
+                self.handle_advance_clock_ms(how_many, do_tick, origin);
             },
             Msg::GetWebFontLoadState(sender) => {
                 let _rw_data = possibly_locked_rw_data.lock();
@@ -865,9 +878,9 @@ impl LayoutThread {
             self.dump_style_tree,
             self.dump_rule_tree,
             self.relayout_event,
-            true,  // nonincremental_layout
-            false, // trace_layout
-            self.dump_flow_tree,
+            true,                // nonincremental_layout
+            self.trace_layout,   // trace_layout
+            self.dump_flow_tree, // dump_flow_tree
         );
     }
 
@@ -894,7 +907,9 @@ impl LayoutThread {
     }
 
     fn exit_now(&mut self) {
-        self.background_hang_monitor.unregister();
+        self.background_hang_monitor
+            .as_ref()
+            .map(|bhm| bhm.unregister());
     }
 
     fn handle_add_stylesheet(&self, stylesheet: &Stylesheet, guard: &SharedRwLockReadGuard) {
@@ -914,10 +929,15 @@ impl LayoutThread {
     }
 
     /// Advances the animation clock of the document.
-    fn handle_advance_clock_ms<'a, 'b>(&mut self, how_many_ms: i32, tick_animations: bool) {
+    fn handle_advance_clock_ms<'a, 'b>(
+        &mut self,
+        how_many_ms: i32,
+        tick_animations: bool,
+        origin: ImmutableOrigin,
+    ) {
         self.timer.increment(how_many_ms as f64 / 1000.0);
         if tick_animations {
-            self.tick_all_animations();
+            self.tick_all_animations(origin);
         }
     }
 
@@ -994,6 +1014,8 @@ impl LayoutThread {
             Au::from_f32_px(initial_viewport.width),
             Au::from_f32_px(initial_viewport.height),
         );
+
+        let origin = data.origin.clone();
 
         // Calculate the actual viewport as per DEVICE-ADAPT § 6
         // If the entire flow tree is invalid, then it will be reflowed anyhow.
@@ -1117,7 +1139,7 @@ impl LayoutThread {
         self.stylist.flush(&guards, Some(element), Some(&map));
 
         // Create a layout context for use throughout the following passes.
-        let mut layout_context = self.build_layout_context(guards.clone(), true, &map);
+        let mut layout_context = self.build_layout_context(guards.clone(), true, &map, origin);
 
         let traversal = RecalcStyle::new(layout_context);
         let token = {
@@ -1138,7 +1160,8 @@ impl LayoutThread {
             } else {
                 build_box_tree()
             };
-            Some(box_tree)
+
+            Some(Arc::new(box_tree))
         } else {
             None
         };
@@ -1151,11 +1174,11 @@ impl LayoutThread {
                 self.viewport_size.height.to_f32_px(),
             );
             let run_layout = || box_tree.layout(&layout_context, viewport_size);
-            let fragment_tree = if let Some(pool) = rayon_pool {
+            let fragment_tree = Arc::new(if let Some(pool) = rayon_pool {
                 pool.install(run_layout)
             } else {
                 run_layout()
-            };
+            });
             *self.box_tree_root.borrow_mut() = Some(box_tree);
             *self.fragment_tree_root.borrow_mut() = Some(fragment_tree);
         }
@@ -1187,7 +1210,7 @@ impl LayoutThread {
         // Perform post-style recalculation layout passes.
         if let Some(root) = &*self.fragment_tree_root.borrow() {
             self.perform_post_style_recalc_layout_passes(
-                root,
+                root.clone(),
                 &data.reflow_goal,
                 Some(&document),
                 &mut layout_context,
@@ -1218,10 +1241,8 @@ impl LayoutThread {
         match *reflow_goal {
             ReflowGoal::LayoutQuery(ref querymsg, _) => match querymsg {
                 &QueryMsg::ContentBoxQuery(node) => {
-                    rw_data.content_box_response = process_content_box_request(
-                        node,
-                        (&*self.fragment_tree_root.borrow()).as_ref(),
-                    );
+                    rw_data.content_box_response =
+                        process_content_box_request(node, self.fragment_tree_root.borrow().clone());
                 },
                 &QueryMsg::ContentBoxesQuery(node) => {
                     rw_data.content_boxes_response = process_content_boxes_request(node);
@@ -1236,7 +1257,7 @@ impl LayoutThread {
                 &QueryMsg::ClientRectQuery(node) => {
                     rw_data.client_rect_response = process_node_geometry_request(
                         node,
-                        (&*self.fragment_tree_root.borrow()).as_ref(),
+                        self.fragment_tree_root.borrow().clone(),
                     );
                 },
                 &QueryMsg::NodeScrollGeometryQuery(node) => {
@@ -1324,11 +1345,11 @@ impl LayoutThread {
         rw_data.scroll_offsets = layout_scroll_states
     }
 
-    fn tick_all_animations<'a, 'b>(&mut self) {
-        self.tick_animations();
+    fn tick_all_animations<'a, 'b>(&mut self, origin: ImmutableOrigin) {
+        self.tick_animations(origin);
     }
 
-    fn tick_animations(&mut self) {
+    fn tick_animations(&mut self, origin: ImmutableOrigin) {
         if self.relayout_event {
             println!(
                 "**** pipeline={}\tForDisplay\tSpecial\tAnimationTick",
@@ -1347,10 +1368,10 @@ impl LayoutThread {
                 ua_or_user: &ua_or_user_guard,
             };
             let snapshots = SnapshotMap::new();
-            let mut layout_context = self.build_layout_context(guards, false, &snapshots);
+            let mut layout_context = self.build_layout_context(guards, false, &snapshots, origin);
 
             self.perform_post_style_recalc_layout_passes(
-                root,
+                root.clone(),
                 &ReflowGoal::TickAnimations,
                 None,
                 &mut layout_context,
@@ -1361,11 +1382,17 @@ impl LayoutThread {
 
     fn perform_post_style_recalc_layout_passes(
         &self,
-        fragment_tree: &FragmentTreeRoot,
+        fragment_tree: Arc<FragmentTreeRoot>,
         reflow_goal: &ReflowGoal,
         document: Option<&ServoLayoutDocument>,
         context: &mut LayoutContext,
     ) {
+        if self.trace_layout {
+            if let Some(box_tree) = &*self.box_tree_root.borrow() {
+                layout_debug::begin_trace(box_tree.clone(), fragment_tree.clone());
+            }
+        }
+
         if !reflow_goal.needs_display() {
             // Defer the paint step until the next ForDisplay.
             //
@@ -1376,6 +1403,7 @@ impl LayoutThread {
                 .needs_paint_from_layout();
             return;
         }
+
         if let Some(document) = document {
             document.will_paint();
         }
@@ -1417,6 +1445,10 @@ impl LayoutThread {
             viewport_size,
             display_list.wr.finalize(),
         );
+
+        if self.trace_layout {
+            layout_debug::end_trace(self.generation.get());
+        }
 
         self.generation.set(self.generation.get() + 1);
     }
