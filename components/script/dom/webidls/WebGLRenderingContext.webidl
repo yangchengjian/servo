@@ -700,6 +700,9 @@ interface mixin WebGLRenderingContextBase
         //        void viewMatrix(WebGLUniformLocation? location);
                 Float32Array getProjectMatrix();
                 Float32Array getViewMatrix();
+                Float32Array getModelMatrix();
+                Float32Array getMVMatrix();
+                Float32Array getMPMatrix();
         //*************************************************************
 };
 

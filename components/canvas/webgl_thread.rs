@@ -348,6 +348,30 @@ impl WebGLThread {
                         vector.extend_from_slice(&arcore.view_mat4x4);
                         result_sender.send(vector);
                     }
+                    WebGLCommand::GetModelMatrix(result_sender) => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetModelMatrix");
+
+                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                        let mut vector = Vec::with_capacity(16);
+                        vector.extend_from_slice(&arcore.mode_mat4x4);
+                        result_sender.send(vector);
+                    }
+                    WebGLCommand::GetMVMatrix(result_sender) => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetMVMatrix");
+
+                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                        let mut vector = Vec::with_capacity(16);
+                        vector.extend_from_slice(&arcore.mv_mat4x4);
+                        result_sender.send(vector);
+                    }
+                    WebGLCommand::GetMPMatrix(result_sender) => {
+                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetMVMatrix");
+
+                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                        let mut vector = Vec::with_capacity(16);
+                        vector.extend_from_slice(&arcore.mp_mat4x4);
+                        result_sender.send(vector);
+                    }
 //                    WebGLCommand::ProjectViewMatrix(location) => {
 //                        ::arcore_jni::log("webgl_thread::WebGLCommand::ProjectViewMatrix");
 //
@@ -1162,6 +1186,9 @@ impl WebGLImpl {
             WebGLCommand::ViewMatrix(_) => (),
             WebGLCommand::GetProjectMatrix(_) => (),
             WebGLCommand::GetViewMatrix(_) => (),
+            WebGLCommand::GetModelMatrix(_) => (),
+            WebGLCommand::GetMVMatrix(_) => (),
+            WebGLCommand::GetMPMatrix(_) => (),
 
             WebGLCommand::GetContextAttributes(ref sender) => sender.send(*attributes).unwrap(),
             WebGLCommand::ActiveTexture(target) => gl.active_texture(target),

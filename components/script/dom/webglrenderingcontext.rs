@@ -4356,6 +4356,48 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
         create_typed_array(cx, &result, &proj);
         unsafe { NonNull::new_unchecked(proj.get()) }
     }
+
+    #[allow(unsafe_code)]
+    fn GetModelMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+
+        let (sender, receiver) = webgl_channel().unwrap();
+        self.send_command(WebGLCommand::GetModelMatrix(sender));
+
+        let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
+        let result = receiver.recv().unwrap();
+
+        let cx = self.global().get_cx();
+        create_typed_array(cx, &result, &proj);
+        unsafe { NonNull::new_unchecked(proj.get()) }
+    }
+
+    #[allow(unsafe_code)]
+    fn GetMVMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+
+        let (sender, receiver) = webgl_channel().unwrap();
+        self.send_command(WebGLCommand::GetMVMatrix(sender));
+
+        let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
+        let result = receiver.recv().unwrap();
+
+        let cx = self.global().get_cx();
+        create_typed_array(cx, &result, &proj);
+        unsafe { NonNull::new_unchecked(proj.get()) }
+    }
+
+    #[allow(unsafe_code)]
+    fn GetMPMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+
+        let (sender, receiver) = webgl_channel().unwrap();
+        self.send_command(WebGLCommand::GetMPMatrix(sender));
+
+        let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
+        let result = receiver.recv().unwrap();
+
+        let cx = self.global().get_cx();
+        create_typed_array(cx, &result, &proj);
+        unsafe { NonNull::new_unchecked(proj.get()) }
+    }
 }
 
 pub trait LayoutCanvasWebGLRenderingContextHelpers {

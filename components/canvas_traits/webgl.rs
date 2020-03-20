@@ -266,6 +266,9 @@ pub enum WebGLCommand {
     ViewMatrix(i32),
     GetProjectMatrix(WebGLSender<Vec<f32>>),
     GetViewMatrix(WebGLSender<Vec<f32>>),
+    GetModelMatrix(WebGLSender<Vec<f32>>),
+    GetMVMatrix(WebGLSender<Vec<f32>>),
+    GetMPMatrix(WebGLSender<Vec<f32>>),
 
     GetContextAttributes(WebGLSender<GLContextAttributes>),
     ActiveTexture(u32),
