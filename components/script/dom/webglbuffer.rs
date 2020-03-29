@@ -4,7 +4,6 @@
 
 // https://www.khronos.org/registry/webgl/specs/latest/1.0/webgl.idl
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextConstants;
-use crate::dom::bindings::codegen::Bindings::WebGLBufferBinding;
 use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGLRenderingContextConstants;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::{reflect_dom_object, DomObject};
@@ -61,7 +60,6 @@ impl WebGLBuffer {
         reflect_dom_object(
             Box::new(WebGLBuffer::new_inherited(context, id)),
             &*context.global(),
-            WebGLBufferBinding::Wrap,
         )
     }
 }
@@ -166,7 +164,7 @@ impl WebGLBuffer {
         );
     }
 
-    pub fn decrement_attached_counter(&self) {
+    pub fn decrement_attached_counter(&self, fallible: bool) {
         self.attached_counter.set(
             self.attached_counter
                 .get()
@@ -174,7 +172,7 @@ impl WebGLBuffer {
                 .expect("refcount underflowed"),
         );
         if self.is_deleted() {
-            self.delete(false);
+            self.delete(fallible);
         }
     }
 

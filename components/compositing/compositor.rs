@@ -483,9 +483,7 @@ impl<Window: WindowMethods + ?Sized> IOCompositor<Window> {
                 ShutdownState::NotShuttingDown,
             ) => {
                 self.pipeline_details(pipeline_id).visible = visible;
-                if visible {
-                    self.process_animations();
-                }
+                self.process_animations();
             },
 
             (Msg::PipelineExited(pipeline_id, sender), _) => {
@@ -1396,7 +1394,7 @@ impl<Window: WindowMethods + ?Sized> IOCompositor<Window> {
                                     FramebufferUintLength::new(height),
                                 );
                                 let dynamic_image = DynamicImage::ImageRgb8(img);
-                                if let Err(e) = dynamic_image.write_to(&mut file, ImageFormat::PNG)
+                                if let Err(e) = dynamic_image.write_to(&mut file, ImageFormat::Png)
                                 {
                                     error!("Failed to save {} ({}).", path, e);
                                 }

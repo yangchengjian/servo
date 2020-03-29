@@ -13,6 +13,7 @@ pub use servo::embedder_traits::{
 pub use servo::script_traits::{MediaSessionActionType, MouseButton};
 
 use getopts::Options;
+use servo::canvas::{SurfaceProviders, WebGlExecutor};
 use servo::compositing::windowing::{
     AnimationState, EmbedderCoordinates, EmbedderMethods, MouseWindowEvent, WindowEvent,
     WindowMethods,
@@ -145,6 +146,8 @@ pub trait HostTrait {
     fn on_media_session_playback_state_change(&self, state: MediaSessionPlaybackState);
     /// Called when the media session position state is set.
     fn on_media_session_set_position_state(&self, duration: f64, position: f64, playback_rate: f64);
+    /// Called when devtools server is started
+    fn on_devtools_started(&self, port: Result<u16, ()>);
 }
 
 pub struct ServoGlue {
@@ -669,6 +672,9 @@ impl ServoGlue {
                             ),
                     };
                 },
+                EmbedderMsg::OnDevtoolsStarted(port) => {
+                    self.callbacks.host_callbacks.on_devtools_started(port);
+                },
                 EmbedderMsg::Status(..) |
                 EmbedderMsg::SelectFiles(..) |
                 EmbedderMsg::MoveTo(..) |
@@ -723,19 +729,52 @@ impl EmbedderMethods for ServoEmbedderCallbacks {
     }
 
     #[cfg(feature = "uwp")]
-    fn register_webxr(&mut self, registry: &mut webxr::MainThreadRegistry) {
+    fn register_webxr(
+        &mut self,
+        registry: &mut webxr::MainThreadRegistry,
+        executor: WebGlExecutor,
+        surface_providers: SurfaceProviders,
+    ) {
         debug!("EmbedderMethods::register_xr");
         assert!(
             self.xr_discovery.is_none(),
             "UWP builds should not be initialized with a WebXR Discovery object"
         );
-        let gl = self.gl.clone();
-        let discovery = webxr::openxr::OpenXrDiscovery::new(gl);
+
+        struct ProviderRegistration(SurfaceProviders);
+        impl webxr::openxr::SurfaceProviderRegistration for ProviderRegistration {
+            fn register(&self, id: webxr_api::SessionId, provider: servo::canvas::SurfaceProvider) {
+                self.0.lock().unwrap().insert(id, provider);
+            }
+            fn clone(&self) -> Box<dyn webxr::openxr::SurfaceProviderRegistration> {
+                Box::new(ProviderRegistration(self.0.clone()))
+            }
+        }
+
+        struct GlThread(WebGlExecutor);
+        impl webxr::openxr::GlThread for GlThread {
+            fn execute(&self, runnable: Box<dyn FnOnce() + Send>) {
+                let _ = self.0.send(runnable);
+            }
+            fn clone(&self) -> Box<dyn webxr::openxr::GlThread> {
+                Box::new(GlThread(self.0.clone()))
+            }
+        }
+
+        let discovery = webxr::openxr::OpenXrDiscovery::new(
+            Box::new(GlThread(executor)),
+            Box::new(ProviderRegistration(surface_providers)),
+        );
         registry.register(discovery);
     }
 
     #[cfg(not(feature = "uwp"))]
-    fn register_webxr(&mut self, registry: &mut webxr::MainThreadRegistry) {
+    fn register_webxr(
+        &mut self,
+        registry: &mut webxr::MainThreadRegistry,
+        _executor: WebGlExecutor,
+        _surface_provider_registration: SurfaceProviders,
+    ) {
         debug!("EmbedderMethods::register_xr");
         if let Some(discovery) = self.xr_discovery.take() {
             registry.register(discovery);

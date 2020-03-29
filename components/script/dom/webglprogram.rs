@@ -5,7 +5,6 @@
 // https://www.khronos.org/registry/webgl/specs/latest/1.0/webgl.idl
 use crate::dom::bindings::cell::{DomRefCell, Ref};
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextConstants as constants2;
-use crate::dom::bindings::codegen::Bindings::WebGLProgramBinding;
 use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGLRenderingContextConstants as constants;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::{reflect_dom_object, DomObject};
@@ -75,7 +74,6 @@ impl WebGLProgram {
         reflect_dom_object(
             Box::new(WebGLProgram::new_inherited(context, id)),
             &*context.global(),
-            WebGLProgramBinding::Wrap,
         )
     }
 }
@@ -363,6 +361,30 @@ impl WebGLProgram {
             .find(|attrib| attrib.name == &*name)
             .map_or(-1, |attrib| attrib.location);
         Ok(location)
+    }
+
+    /// glGetFragDataLocation
+    pub fn get_frag_data_location(&self, name: DOMString) -> WebGLResult<i32> {
+        if !self.is_linked() || self.is_deleted() {
+            return Err(WebGLError::InvalidOperation);
+        }
+
+        if !validate_glsl_name(&name)? {
+            return Ok(-1);
+        }
+        if name.starts_with("gl_") {
+            return Ok(-1);
+        }
+
+        let (sender, receiver) = webgl_channel().unwrap();
+        self.upcast::<WebGLObject>()
+            .context()
+            .send_command(WebGLCommand::GetFragDataLocation(
+                self.id,
+                name.into(),
+                sender,
+            ));
+        Ok(receiver.recv().unwrap())
     }
 
     /// glGetUniformLocation

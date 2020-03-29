@@ -42,9 +42,11 @@ use js::glue::{
     StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
 };
 use js::jsapi::ContextOptionsRef;
+use js::jsapi::GetPromiseUserInputEventHandlingState;
 use js::jsapi::InitConsumeStreamCallback;
 use js::jsapi::InitDispatchToEventLoop;
 use js::jsapi::MimeType;
+use js::jsapi::PromiseUserInputEventHandlingState;
 use js::jsapi::StreamConsumer as JSStreamConsumer;
 use js::jsapi::{BuildIdCharVector, DisableIncrementalGC, GCDescription, GCProgress};
 use js::jsapi::{Dispatchable as JSRunnable, Dispatchable_MaybeShuttingDown};
@@ -197,7 +199,7 @@ unsafe extern "C" fn empty(extra: *const c_void) -> bool {
 unsafe extern "C" fn enqueue_promise_job(
     extra: *const c_void,
     cx: *mut RawJSContext,
-    _promise: HandleObject,
+    promise: HandleObject,
     job: HandleObject,
     _allocation_site: HandleObject,
     incumbent_global: HandleObject,
@@ -208,10 +210,18 @@ unsafe extern "C" fn enqueue_promise_job(
             let microtask_queue = &*(extra as *const MicrotaskQueue);
             let global = GlobalScope::from_object(incumbent_global.get());
             let pipeline = global.pipeline_id();
+            let interaction = if promise.get().is_null() {
+                PromiseUserInputEventHandlingState::DontCare
+            } else {
+                GetPromiseUserInputEventHandlingState(promise)
+            };
+            let is_user_interacting =
+                interaction == PromiseUserInputEventHandlingState::HadUserInteractionAtCreation;
             microtask_queue.enqueue(
                 Microtask::Promise(EnqueuedPromiseCallback {
                     callback: PromiseJobCallback::new(cx, job.get()),
                     pipeline,
+                    is_user_interacting,
                 }),
                 cx,
             );
@@ -225,6 +235,7 @@ unsafe extern "C" fn enqueue_promise_job(
 /// https://html.spec.whatwg.org/multipage/#the-hostpromiserejectiontracker-implementation
 unsafe extern "C" fn promise_rejection_tracker(
     cx: *mut RawJSContext,
+    _muted_errors: bool,
     promise: HandleObject,
     state: PromiseRejectionHandlingState,
     _data: *mut c_void,
@@ -507,8 +518,16 @@ unsafe fn new_rt_and_cx_with_parent(
 
     // Enable or disable the JITs.
     let cx_opts = &mut *ContextOptionsRef(cx);
-    cx_opts.set_baseline_(pref!(js.baseline.enabled));
-    cx_opts.set_ion_(pref!(js.ion.enabled));
+    JS_SetGlobalJitCompilerOption(
+        cx,
+        JSJitCompilerOption::JSJITCOMPILER_BASELINE_ENABLE,
+        pref!(js.baseline.enabled) as u32,
+    );
+    JS_SetGlobalJitCompilerOption(
+        cx,
+        JSJitCompilerOption::JSJITCOMPILER_ION_ENABLE,
+        pref!(js.ion.enabled) as u32,
+    );
     cx_opts.set_asmJS_(pref!(js.asmjs.enabled));
     let wasm_enabled = pref!(js.wasm.enabled);
     cx_opts.set_wasm_(wasm_enabled);
@@ -523,7 +542,11 @@ unsafe fn new_rt_and_cx_with_parent(
     cx_opts.set_extraWarnings_(pref!(js.strict.enabled));
     // TODO: handle js.strict.debug.enabled
     // TODO: handle js.throw_on_asmjs_validation_failure (needs new Spidermonkey)
-    cx_opts.set_nativeRegExp_(pref!(js.native_regex.enabled));
+    JS_SetGlobalJitCompilerOption(
+        cx,
+        JSJitCompilerOption::JSJITCOMPILER_NATIVE_REGEXP_ENABLE,
+        pref!(js.native_regex.enabled) as u32,
+    );
     JS_SetParallelParsingEnabled(cx, pref!(js.parallel_parsing.enabled));
     JS_SetOffthreadIonCompilationEnabled(cx, pref!(js.offthread_compilation.enabled));
     JS_SetGlobalJitCompilerOption(
@@ -552,11 +575,6 @@ unsafe fn new_rt_and_cx_with_parent(
     // TODO: handle js.shared_memory.enabled
     JS_SetGCParameter(
         cx,
-        JSGCParamKey::JSGC_MAX_MALLOC_BYTES,
-        (pref!(js.mem.high_water_mark) * 1024 * 1024) as u32,
-    );
-    JS_SetGCParameter(
-        cx,
         JSGCParamKey::JSGC_MAX_BYTES,
         in_range(pref!(js.mem.max), 1, 0x100)
             .map(|val| (val * 1024 * 1024) as u32)
@@ -572,7 +590,7 @@ unsafe fn new_rt_and_cx_with_parent(
     };
     JS_SetGCParameter(cx, JSGCParamKey::JSGC_MODE, js_gc_mode as u32);
     if let Some(val) = in_range(pref!(js.mem.gc.incremental.slice_ms), 0, 100_000) {
-        JS_SetGCParameter(cx, JSGCParamKey::JSGC_SLICE_TIME_BUDGET, val as u32);
+        JS_SetGCParameter(cx, JSGCParamKey::JSGC_SLICE_TIME_BUDGET_MS, val as u32);
     }
     JS_SetGCParameter(
         cx,
@@ -617,22 +635,14 @@ unsafe fn new_rt_and_cx_with_parent(
         JS_SetGCParameter(cx, JSGCParamKey::JSGC_HIGH_FREQUENCY_HIGH_LIMIT, val as u32);
     }
     if let Some(val) = in_range(pref!(js.mem.gc.allocation_threshold_factor), 0, 10_000) {
-        JS_SetGCParameter(
-            cx,
-            JSGCParamKey::JSGC_ALLOCATION_THRESHOLD_FACTOR,
-            val as u32,
-        );
+        JS_SetGCParameter(cx, JSGCParamKey::JSGC_NON_INCREMENTAL_FACTOR, val as u32);
     }
     if let Some(val) = in_range(
         pref!(js.mem.gc.allocation_threshold_avoid_interrupt_factor),
         0,
         10_000,
     ) {
-        JS_SetGCParameter(
-            cx,
-            JSGCParamKey::JSGC_ALLOCATION_THRESHOLD_FACTOR_AVOID_INTERRUPT,
-            val as u32,
-        );
+        JS_SetGCParameter(cx, JSGCParamKey::JSGC_AVOID_INTERRUPT_FACTOR, val as u32);
     }
     if let Some(val) = in_range(pref!(js.mem.gc.empty_chunk_count_min), 0, 10_000) {
         JS_SetGCParameter(cx, JSGCParamKey::JSGC_MIN_EMPTY_CHUNK_COUNT, val as u32);
@@ -836,6 +846,7 @@ unsafe fn set_gc_zeal_options(cx: *mut RawJSContext) {
 unsafe fn set_gc_zeal_options(_: *mut RawJSContext) {}
 
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct JSContext(*mut RawJSContext);
 
 #[allow(unsafe_code)]

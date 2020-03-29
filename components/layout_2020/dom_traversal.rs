@@ -2,21 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::element_data::{LayoutBox, LayoutDataForElement};
 use crate::geom::PhysicalSize;
-use crate::replaced::ReplacedContent;
+use crate::replaced::{CanvasInfo, CanvasSource, ReplacedContent};
 use crate::style_ext::{Display, DisplayGeneratingBox, DisplayInside, DisplayOutside};
 use crate::wrapper::GetRawData;
-use atomic_refcell::{AtomicRefCell, AtomicRefMut};
+use atomic_refcell::AtomicRefMut;
 use html5ever::LocalName;
 use net_traits::image::base::Image as NetImage;
 use script_layout_interface::wrapper_traits::{
     LayoutNode, ThreadSafeLayoutElement, ThreadSafeLayoutNode,
 };
+use script_layout_interface::HTMLCanvasDataSource;
 use servo_arc::Arc as ServoArc;
 use std::marker::PhantomData as marker;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use style::dom::{OpaqueNode, TNode};
 use style::properties::ComputedValues;
 use style::selector_parser::PseudoElement;
@@ -316,12 +318,12 @@ where
 }
 
 pub struct BoxSlot<'dom> {
-    slot: Option<ServoArc<AtomicRefCell<Option<LayoutBox>>>>,
+    slot: Option<ArcRefCell<Option<LayoutBox>>>,
     marker: marker<&'dom ()>,
 }
 
 impl BoxSlot<'_> {
-    pub(crate) fn new(slot: ServoArc<AtomicRefCell<Option<LayoutBox>>>) -> Self {
+    pub(crate) fn new(slot: ArcRefCell<Option<LayoutBox>>) -> Self {
         *slot.borrow_mut() = None;
         let slot = Some(slot);
         Self { slot, marker }
@@ -354,6 +356,7 @@ pub(crate) trait NodeExt<'dom>: 'dom + Copy + LayoutNode + Send + Sync {
     /// Returns the image if it’s loaded, and its size in image pixels
     /// adjusted for `image_density`.
     fn as_image(self) -> Option<(Option<Arc<NetImage>>, PhysicalSize<f64>)>;
+    fn as_canvas(self) -> Option<(CanvasInfo, PhysicalSize<f64>)>;
     fn first_child(self) -> Option<Self>;
     fn next_sibling(self) -> Option<Self>;
     fn parent_node(self) -> Option<Self>;
@@ -397,6 +400,24 @@ where
             height = height / density;
         }
         Some((resource, PhysicalSize::new(width, height)))
+    }
+
+    fn as_canvas(self) -> Option<(CanvasInfo, PhysicalSize<f64>)> {
+        let node = self.to_threadsafe();
+        let canvas_data = node.canvas_data()?;
+        let source = match canvas_data.source {
+            HTMLCanvasDataSource::WebGL(texture_id) => CanvasSource::WebGL(texture_id),
+            HTMLCanvasDataSource::Image(ipc_sender) => {
+                CanvasSource::Image(ipc_sender.map(|renderer| Arc::new(Mutex::new(renderer))))
+            },
+        };
+        Some((
+            CanvasInfo {
+                source,
+                canvas_id: canvas_data.canvas_id,
+            },
+            PhysicalSize::new(canvas_data.width.into(), canvas_data.height.into()),
+        ))
     }
 
     fn first_child(self) -> Option<Self> {

@@ -67,6 +67,12 @@ void prompt_alert(const char *message, bool trusted) {
   sServo->Delegate().OnServoPromptAlert(char2hstring(message), trusted);
 }
 
+void on_devtools_started(Servo::DevtoolsServerState result,
+                         const unsigned int port) {
+  sServo->Delegate().OnServoDevtoolsStarted(
+      result == Servo::DevtoolsServerState::Started, port);
+}
+
 Servo::PromptResult prompt_ok_cancel(const char *message, bool trusted) {
   return sServo->Delegate().OnServoPromptOkCancel(char2hstring(message),
                                                   trusted);
@@ -92,7 +98,7 @@ Servo::Servo(hstring url, hstring args, GLsizei width, GLsizei height,
     : mWindowHeight(height), mWindowWidth(width), mDelegate(aDelegate) {
 
   capi::CInitOptions o;
-  hstring defaultPrefs = L" --pref dom.webxr.enabled  --devtools=6000";
+  hstring defaultPrefs = L" --pref dom.webxr.enabled --devtools";
   o.args = *hstring2char(args + defaultPrefs);
   o.url = *hstring2char(url);
   o.width = mWindowWidth;
@@ -101,26 +107,22 @@ Servo::Servo(hstring url, hstring args, GLsizei width, GLsizei height,
   o.enable_subpixel_text_antialiasing = false;
   o.vr_pointer = NULL;
 
-  // 7 filter modules.
-  /* Sample list of servo modules to filter.
-  static char *pfilters[] = {
-          "servo",
-          "simpleservo",
-          "simpleservo::jniapi",
-          "simpleservo::gl_glue::egl",
-          // Show JS errors by default.
-          "script::dom::bindings::error",
-          // Show GL errors by default.
-          "canvas::webgl_thread",
-          "compositing::compositor",
-          "constellation::constellation",
-  };
-  */
+  // Note about logs:
+  // By default: all modules are enabled. Only warn level-logs are displayed.
+  // To change the log level, add "--vslogger-level debug" to o.args.
+  // To only print logs from specific modules, add their names to pfilters.
+  // For example:
+  // static char *pfilters[] = {
+  //   "servo",
+  //   "simpleservo",
+  //   "script::dom::bindings::error", // Show JS errors by default.
+  //   "canvas::webgl_thread", // Show GL errors by default.
+  //   "compositing",
+  //   "constellation",
+  // };
+  // o.vslogger_mod_list = pfilters;
+  // o.vslogger_mod_size = sizeof(pfilters) / sizeof(pfilters[0]);
 
-  // Example Call when *pfilters[] is used:
-  // o.vslogger_mod_list = pfilters; // servo log modules
-  // o.vslogger_mod_size = sizeof(pfilters) / sizeof(pfilters[0]); //
-  // Important: Number of modules in pfilters
   o.vslogger_mod_list = NULL;
   o.vslogger_mod_size = 0;
 
@@ -147,6 +149,7 @@ Servo::Servo(hstring url, hstring args, GLsizei width, GLsizei height,
   c.prompt_ok_cancel = &prompt_ok_cancel;
   c.prompt_yes_no = &prompt_yes_no;
   c.prompt_input = &prompt_input;
+  c.on_devtools_started = &on_devtools_started;
 
   capi::register_panic_handler(&on_panic);
 

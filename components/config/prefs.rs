@@ -294,6 +294,9 @@ mod gen {
                     event_polling_interval: i64,
                     test: bool,
                 },
+                webvtt: {
+                    enabled: bool,
+                },
                 webxr: {
                     #[serde(default)]
                     enabled: bool,
@@ -385,7 +388,6 @@ mod gen {
                             level: i64,
                         },
                     },
-                    high_water_mark: i64,
                     max: i64,
                 },
                 native_regex: {

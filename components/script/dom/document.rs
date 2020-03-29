@@ -8,7 +8,6 @@ use crate::dom::beforeunloadevent::BeforeUnloadEvent;
 use crate::dom::bindings::callback::ExceptionHandling;
 use crate::dom::bindings::cell::{ref_filter_map, DomRefCell, Ref, RefMut};
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEventBinding::BeforeUnloadEventMethods;
-use crate::dom::bindings::codegen::Bindings::DocumentBinding;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
     DocumentMethods, DocumentReadyState,
 };
@@ -1636,11 +1635,10 @@ impl Document {
             .borrow_mut()
             .push((ident, Some(callback)));
 
-        // TODO: Should tick animation only when document is visible
-
         // If we are running 'fake' animation frames, we unconditionally
         // set up a one-shot timer for script to execute the rAF callbacks.
-        if self.is_faking_animation_frames() {
+        if self.is_faking_animation_frames() && self.window().visible() {
+            warn!("Scheduling fake animation frame. Animation frames tick too fast.");
             let callback = FakeRequestAnimationFrameCallback {
                 document: Trusted::new(self),
             };
@@ -3045,7 +3043,6 @@ impl Document {
                 canceller,
             )),
             window,
-            DocumentBinding::Wrap,
         );
         {
             let node = document.upcast::<Node>();
@@ -4092,29 +4089,6 @@ impl DocumentMethods for Document {
         filter: Option<Rc<NodeFilter>>,
     ) -> DomRoot<NodeIterator> {
         NodeIterator::new(self, root, what_to_show, filter)
-    }
-
-    // https://w3c.github.io/touch-events/#idl-def-Document
-    fn CreateTouch(
-        &self,
-        window: &Window,
-        target: &EventTarget,
-        identifier: i32,
-        page_x: Finite<f64>,
-        page_y: Finite<f64>,
-        screen_x: Finite<f64>,
-        screen_y: Finite<f64>,
-    ) -> DomRoot<Touch> {
-        let client_x = Finite::wrap(*page_x - window.PageXOffset() as f64);
-        let client_y = Finite::wrap(*page_y - window.PageYOffset() as f64);
-        Touch::new(
-            window, identifier, target, screen_x, screen_y, client_x, client_y, page_x, page_y,
-        )
-    }
-
-    // https://w3c.github.io/touch-events/#idl-def-document-createtouchlist(touch...)
-    fn CreateTouchList(&self, touches: &[&Touch]) -> DomRoot<TouchList> {
-        TouchList::new(&self.window, &touches)
     }
 
     // https://dom.spec.whatwg.org/#dom-document-createtreewalker

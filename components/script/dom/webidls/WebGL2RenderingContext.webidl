@@ -11,10 +11,6 @@
 typedef long long GLint64;
 typedef unsigned long long GLuint64;
 
-
-// interface WebGLVertexArrayObject : WebGLObject {
-// };
-
 typedef (/*[AllowShared]*/ Uint32Array or sequence<GLuint>) Uint32List;
 
 interface mixin WebGL2RenderingContextBase
@@ -317,12 +313,12 @@ interface mixin WebGL2RenderingContextBase
   void invalidateFramebuffer(GLenum target, sequence<GLenum> attachments);
   void invalidateSubFramebuffer(GLenum target, sequence<GLenum> attachments,
                                 GLint x, GLint y, GLsizei width, GLsizei height);
-  // void readBuffer(GLenum src);
+  void readBuffer(GLenum src);
 
   /* Renderbuffer objects */
-  // any getInternalformatParameter(GLenum target, GLenum internalformat, GLenum pname);
-  // void renderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalformat,
-  //                                     GLsizei width, GLsizei height);
+  any getInternalformatParameter(GLenum target, GLenum internalformat, GLenum pname);
+  void renderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalformat,
+                                      GLsizei width, GLsizei height);
 
   /* Texture objects */
   // void texStorage2D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width,
@@ -422,7 +418,7 @@ interface mixin WebGL2RenderingContextBase
   //                              optional GLuint srcLengthOverride = 0);
 
   /* Programs and shaders */
-  // [WebGLHandlesContextLoss] GLint getFragDataLocation(WebGLProgram program, DOMString name);
+  [WebGLHandlesContextLoss] GLint getFragDataLocation(WebGLProgram program, DOMString name);
 
   /* Uniforms */
   void uniform1ui(WebGLUniformLocation? location, GLuint v0);
@@ -479,7 +475,7 @@ interface mixin WebGL2RenderingContextBase
                   /*[AllowShared]*/ ArrayBufferView dstData, GLuint dstOffset);
 
   /* Multiple Render Targets */
-  // void drawBuffers(sequence<GLenum> buffers);
+  void drawBuffers(sequence<GLenum> buffers);
 
   void clearBufferfv(GLenum buffer, GLint drawbuffer, Float32List values,
                      optional GLuint srcOffset = 0);
@@ -531,7 +527,7 @@ interface mixin WebGL2RenderingContextBase
   /* Uniform Buffer Objects and Transform Feedback Buffers */
   void bindBufferBase(GLenum target, GLuint index, WebGLBuffer? buffer);
   void bindBufferRange(GLenum target, GLuint index, WebGLBuffer? buffer, GLintptr offset, GLsizeiptr size);
-  // any getIndexedParameter(GLenum target, GLuint index);
+  any getIndexedParameter(GLenum target, GLuint index);
   sequence<GLuint>? getUniformIndices(WebGLProgram program, sequence<DOMString> uniformNames);
   any getActiveUniforms(WebGLProgram program, sequence<GLuint> uniformIndices, GLenum pname);
   GLuint getUniformBlockIndex(WebGLProgram program, DOMString uniformBlockName);
@@ -540,10 +536,10 @@ interface mixin WebGL2RenderingContextBase
   void uniformBlockBinding(WebGLProgram program, GLuint uniformBlockIndex, GLuint uniformBlockBinding);
 
   /* Vertex Array Objects */
-  /*WebGLVertexArrayObject? createVertexArray();
+  WebGLVertexArrayObject? createVertexArray();
   void deleteVertexArray(WebGLVertexArrayObject? vertexArray);
   [WebGLHandlesContextLoss] GLboolean isVertexArray(WebGLVertexArrayObject? vertexArray);
-  void bindVertexArray(WebGLVertexArrayObject? array);*/
+  void bindVertexArray(WebGLVertexArrayObject? array);
 };
 
 [Exposed=Window, Pref="dom.webgl2.enabled"]

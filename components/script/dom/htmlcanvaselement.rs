@@ -4,7 +4,6 @@
 
 use crate::dom::attr::Attr;
 use crate::dom::bindings::cell::{ref_filter_map, DomRefCell, Ref};
-use crate::dom::bindings::codegen::Bindings::HTMLCanvasElementBinding;
 use crate::dom::bindings::codegen::Bindings::HTMLCanvasElementBinding::{
     HTMLCanvasElementMethods, RenderingContext,
 };
@@ -86,7 +85,6 @@ impl HTMLCanvasElement {
                 local_name, prefix, document,
             )),
             document,
-            HTMLCanvasElementBinding::Wrap,
         )
     }
 
@@ -392,7 +390,7 @@ impl HTMLCanvasElementMethods for HTMLCanvasElement {
         // FIXME(nox): https://github.com/PistonDevelopers/image-png/issues/86
         // FIXME(nox): https://github.com/PistonDevelopers/image-png/issues/87
         PNGEncoder::new(&mut png)
-            .encode(&file, self.Width(), self.Height(), ColorType::RGBA(8))
+            .encode(&file, self.Width(), self.Height(), ColorType::Rgba8)
             .unwrap();
         let mut url = "data:image/png;base64,".to_owned();
         // FIXME(nox): Should this use base64::URL_SAFE?

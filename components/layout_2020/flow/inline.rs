@@ -2,14 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::flow::float::FloatBox;
 use crate::flow::FlowLayout;
 use crate::formatting_contexts::IndependentFormattingContext;
-use crate::fragments::CollapsedBlockMargins;
-use crate::fragments::{AnonymousFragment, BoxFragment, DebugId, Fragment, TextFragment};
+use crate::fragments::{
+    AbsoluteOrFixedPositionedFragment, AnonymousFragment, BoxFragment, CollapsedBlockMargins,
+    DebugId, FontMetrics, Fragment, TextFragment,
+};
 use crate::geom::flow_relative::{Rect, Sides, Vec2};
-use crate::positioned::{relative_adjustement, AbsolutelyPositionedBox, PositioningContext};
+use crate::positioned::{
+    relative_adjustement, AbsolutelyPositionedBox, HoistedAbsolutelyPositionedBox,
+    PositioningContext,
+};
 use crate::sizing::ContentSizes;
 use crate::style_ext::{ComputedValuesExt, Display, DisplayGeneratingBox, DisplayOutside};
 use crate::ContainingBlock;
@@ -20,19 +26,21 @@ use style::dom::OpaqueNode;
 use style::properties::ComputedValues;
 use style::values::computed::{Length, LengthPercentage, Percentage};
 use style::values::specified::text::TextAlignKeyword;
+use style::values::specified::text::TextDecorationLine;
 use style::Zero;
 use webrender_api::FontInstanceKey;
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct InlineFormattingContext {
-    pub(super) inline_level_boxes: Vec<Arc<InlineLevelBox>>,
+    pub(super) inline_level_boxes: Vec<ArcRefCell<InlineLevelBox>>,
+    pub(super) text_decoration_line: TextDecorationLine,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) enum InlineLevelBox {
     InlineBox(InlineBox),
     TextRun(TextRun),
-    OutOfFlowAbsolutelyPositionedBox(AbsolutelyPositionedBox),
+    OutOfFlowAbsolutelyPositionedBox(Arc<AbsolutelyPositionedBox>),
     OutOfFlowFloatBox(FloatBox),
     Atomic(IndependentFormattingContext),
 }
@@ -44,7 +52,7 @@ pub(crate) struct InlineBox {
     pub style: Arc<ComputedValues>,
     pub first_fragment: bool,
     pub last_fragment: bool,
-    pub children: Vec<Arc<InlineLevelBox>>,
+    pub children: Vec<ArcRefCell<InlineLevelBox>>,
 }
 
 /// https://www.w3.org/TR/css-display-3/#css-text-run
@@ -57,10 +65,16 @@ pub(crate) struct TextRun {
 }
 
 struct InlineNestingLevelState<'box_tree> {
-    remaining_boxes: std::slice::Iter<'box_tree, Arc<InlineLevelBox>>,
+    remaining_boxes: InlineBoxChildIter<'box_tree>,
     fragments_so_far: Vec<Fragment>,
     inline_start: Length,
     max_block_size_of_fragments_so_far: Length,
+    positioning_context: Option<PositioningContext>,
+    /// Indicates whether this nesting level have text decorations in effect.
+    /// From https://drafts.csswg.org/css-text-decor/#line-decoration
+    // "When specified on or propagated to a block container that establishes
+    //  an IFC..."
+    text_decoration_line: TextDecorationLine,
 }
 
 struct PartialInlineBoxFragment<'box_tree> {
@@ -75,12 +89,37 @@ struct PartialInlineBoxFragment<'box_tree> {
 }
 
 struct InlineFormattingContextState<'box_tree, 'a, 'b> {
-    positioning_context: &'a mut PositioningContext<'box_tree>,
+    positioning_context: &'a mut PositioningContext,
     containing_block: &'b ContainingBlock<'b>,
     lines: Lines,
     inline_position: Length,
     partial_inline_boxes_stack: Vec<PartialInlineBoxFragment<'box_tree>>,
     current_nesting_level: InlineNestingLevelState<'box_tree>,
+}
+
+impl<'box_tree, 'a, 'b> InlineFormattingContextState<'box_tree, 'a, 'b> {
+    fn push_hoisted_box_to_positioning_context(
+        &mut self,
+        hoisted_box: HoistedAbsolutelyPositionedBox,
+    ) {
+        if let Some(context) = self.current_nesting_level.positioning_context.as_mut() {
+            context.push(hoisted_box);
+            return;
+        }
+
+        for nesting_level in self.partial_inline_boxes_stack.iter_mut().rev() {
+            if let Some(context) = nesting_level
+                .parent_nesting_level
+                .positioning_context
+                .as_mut()
+            {
+                context.push(hoisted_box);
+                return;
+            }
+        }
+
+        self.positioning_context.push(hoisted_box);
+    }
 }
 
 struct Lines {
@@ -90,6 +129,13 @@ struct Lines {
 }
 
 impl InlineFormattingContext {
+    pub(super) fn new(text_decoration_line: TextDecorationLine) -> InlineFormattingContext {
+        InlineFormattingContext {
+            inline_level_boxes: Default::default(),
+            text_decoration_line,
+        }
+    }
+
     // This works on an already-constructed `InlineFormattingContext`,
     // Which would have to change if/when
     // `BlockContainer::construct` parallelize their construction.
@@ -103,10 +149,10 @@ impl InlineFormattingContext {
             fn traverse(
                 &mut self,
                 layout_context: &LayoutContext,
-                inline_level_boxes: &[Arc<InlineLevelBox>],
+                inline_level_boxes: &[ArcRefCell<InlineLevelBox>],
             ) {
                 for inline_level_box in inline_level_boxes {
-                    match &**inline_level_box {
+                    match &*inline_level_box.borrow() {
                         InlineLevelBox::InlineBox(inline_box) => {
                             let padding = inline_box.style.padding();
                             let border = inline_box.style.border_width();
@@ -202,10 +248,10 @@ impl InlineFormattingContext {
         computation.paragraph
     }
 
-    pub(super) fn layout<'a>(
-        &'a self,
+    pub(super) fn layout(
+        &self,
         layout_context: &LayoutContext,
-        positioning_context: &mut PositioningContext<'a>,
+        positioning_context: &mut PositioningContext,
         containing_block: &ContainingBlock,
         tree_rank: usize,
     ) -> FlowLayout {
@@ -219,17 +265,20 @@ impl InlineFormattingContext {
             },
             inline_position: Length::zero(),
             current_nesting_level: InlineNestingLevelState {
-                remaining_boxes: self.inline_level_boxes.iter(),
+                remaining_boxes: InlineBoxChildIter::from_formatting_context(self),
                 fragments_so_far: Vec::with_capacity(self.inline_level_boxes.len()),
                 inline_start: Length::zero(),
                 max_block_size_of_fragments_so_far: Length::zero(),
+                positioning_context: None,
+                text_decoration_line: self.text_decoration_line,
             },
         };
+
         loop {
             if let Some(child) = ifc.current_nesting_level.remaining_boxes.next() {
-                match &**child {
+                match &*child.borrow() {
                     InlineLevelBox::InlineBox(inline) => {
-                        let partial = inline.start_layout(&mut ifc);
+                        let partial = inline.start_layout(child.clone(), &mut ifc);
                         ifc.partial_inline_boxes_stack.push(partial)
                     },
                     InlineLevelBox::TextRun(run) => run.layout(layout_context, &mut ifc),
@@ -254,8 +303,17 @@ impl InlineFormattingContext {
                                     panic!("display:none does not generate an abspos box")
                                 },
                             };
-                        ifc.positioning_context
-                            .push(box_.to_hoisted(initial_start_corner, tree_rank));
+                        let hoisted_box = box_.clone().to_hoisted(initial_start_corner, tree_rank);
+                        let hoisted_fragment = hoisted_box.fragment.clone();
+                        ifc.push_hoisted_box_to_positioning_context(hoisted_box);
+                        ifc.current_nesting_level.fragments_so_far.push(
+                            Fragment::AbsoluteOrFixedPositioned(
+                                AbsoluteOrFixedPositionedFragment {
+                                    hoisted_fragment,
+                                    position: box_.contents.style.clone_position(),
+                                },
+                            ),
+                        );
                     },
                     InlineLevelBox::OutOfFlowFloatBox(_box_) => {
                         // TODO
@@ -265,6 +323,7 @@ impl InlineFormattingContext {
             // Reached the end of ifc.remaining_boxes
             if let Some(mut partial) = ifc.partial_inline_boxes_stack.pop() {
                 partial.finish_layout(
+                    layout_context,
                     &mut ifc.current_nesting_level,
                     &mut ifc.inline_position,
                     false,
@@ -333,7 +392,7 @@ impl Lines {
         };
         if move_by > Length::zero() {
             for fragment in &mut line_contents {
-                fragment.position_mut().inline += move_by;
+                fragment.offset_inline(&move_by);
             }
         }
         let start_corner = Vec2 {
@@ -345,6 +404,7 @@ impl Lines {
             block: line_block_size,
         };
         self.next_line_block_position += size.block;
+
         self.fragments
             .push(Fragment::Anonymous(AnonymousFragment::new(
                 Rect { start_corner, size },
@@ -356,7 +416,8 @@ impl Lines {
 
 impl InlineBox {
     fn start_layout<'box_tree>(
-        &'box_tree self,
+        &self,
+        this_inline_level_box: ArcRefCell<InlineLevelBox>,
         ifc: &mut InlineFormattingContextState<'box_tree, '_, '_>,
     ) -> PartialInlineBoxFragment<'box_tree> {
         let style = self.style.clone();
@@ -381,6 +442,9 @@ impl InlineBox {
         if style.clone_position().is_relative() {
             start_corner += &relative_adjustement(&style, ifc.containing_block)
         }
+        let positioning_context = PositioningContext::new_for_style(&style);
+        let text_decoration_line =
+            ifc.current_nesting_level.text_decoration_line | style.clone_text_decoration_line();
         PartialInlineBoxFragment {
             tag: self.tag,
             style,
@@ -392,10 +456,14 @@ impl InlineBox {
             parent_nesting_level: std::mem::replace(
                 &mut ifc.current_nesting_level,
                 InlineNestingLevelState {
-                    remaining_boxes: self.children.iter(),
+                    remaining_boxes: InlineBoxChildIter::from_inline_level_box(
+                        this_inline_level_box,
+                    ),
                     fragments_so_far: Vec::with_capacity(self.children.len()),
                     inline_start: ifc.inline_position,
                     max_block_size_of_fragments_so_far: Length::zero(),
+                    positioning_context,
+                    text_decoration_line: text_decoration_line,
                 },
             ),
         }
@@ -405,6 +473,7 @@ impl InlineBox {
 impl<'box_tree> PartialInlineBoxFragment<'box_tree> {
     fn finish_layout(
         &mut self,
+        layout_context: &LayoutContext,
         nesting_level: &mut InlineNestingLevelState,
         inline_position: &mut Length,
         at_line_break: bool,
@@ -445,16 +514,21 @@ impl<'box_tree> PartialInlineBoxFragment<'box_tree> {
                     fragment.border.block_sum() +
                     fragment.margin.block_sum(),
             );
+
+        if let Some(context) = nesting_level.positioning_context.as_mut() {
+            context.layout_collected_children(layout_context, &mut fragment);
+        }
+
         self.parent_nesting_level
             .fragments_so_far
             .push(Fragment::Box(fragment));
     }
 }
 
-fn layout_atomic<'box_tree>(
+fn layout_atomic(
     layout_context: &LayoutContext,
-    ifc: &mut InlineFormattingContextState<'box_tree, '_, '_>,
-    atomic: &'box_tree IndependentFormattingContext,
+    ifc: &mut InlineFormattingContextState,
+    atomic: &IndependentFormattingContext,
 ) {
     let cbis = ifc.containing_block.inline_size;
     let padding = atomic.style.padding().percentages_relative_to(cbis);
@@ -577,8 +651,7 @@ fn layout_atomic<'box_tree>(
 }
 
 struct BreakAndShapeResult {
-    font_ascent: Au,
-    font_line_gap: Au,
+    font_metrics: FontMetrics,
     font_key: FontInstanceKey,
     runs: Vec<GlyphRun>,
     break_at_start: bool,
@@ -645,8 +718,7 @@ impl TextRun {
             );
 
             BreakAndShapeResult {
-                font_ascent: font.metrics.ascent,
-                font_line_gap: font.metrics.line_gap,
+                font_metrics: (&font.metrics).into(),
                 font_key: font.font_key,
                 runs,
                 break_at_start,
@@ -658,8 +730,7 @@ impl TextRun {
         use style::values::generics::text::LineHeight;
 
         let BreakAndShapeResult {
-            font_ascent,
-            font_line_gap,
+            font_metrics,
             font_key,
             runs,
             break_at_start: _,
@@ -696,7 +767,7 @@ impl TextRun {
                 }
             }
             let line_height = match self.parent_style.get_inherited_text().line_height {
-                LineHeight::Normal => font_line_gap.into(),
+                LineHeight::Normal => font_metrics.line_gap,
                 LineHeight::Number(n) => font_size * n.0,
                 LineHeight::Length(l) => l.0,
             };
@@ -721,9 +792,10 @@ impl TextRun {
                     debug_id: DebugId::new(),
                     parent_style: self.parent_style.clone(),
                     rect,
-                    ascent: font_ascent.into(),
+                    font_metrics,
                     font_key,
                     glyphs,
+                    text_decoration_line: ifc.current_nesting_level.text_decoration_line,
                 }));
             if runs.is_empty() {
                 break;
@@ -732,7 +804,12 @@ impl TextRun {
                 ifc.current_nesting_level.inline_start = Length::zero();
                 let mut nesting_level = &mut ifc.current_nesting_level;
                 for partial in ifc.partial_inline_boxes_stack.iter_mut().rev() {
-                    partial.finish_layout(nesting_level, &mut ifc.inline_position, true);
+                    partial.finish_layout(
+                        layout_context,
+                        nesting_level,
+                        &mut ifc.inline_position,
+                        true,
+                    );
                     partial.start_corner.inline = Length::zero();
                     partial.padding.inline_start = Length::zero();
                     partial.border.inline_start = Length::zero();
@@ -744,6 +821,57 @@ impl TextRun {
                     .finish_line(nesting_level, ifc.containing_block, ifc.inline_position);
                 ifc.inline_position = Length::zero();
             }
+        }
+    }
+}
+
+enum InlineBoxChildIter<'box_tree> {
+    InlineFormattingContext(std::slice::Iter<'box_tree, ArcRefCell<InlineLevelBox>>),
+    InlineBox {
+        inline_level_box: ArcRefCell<InlineLevelBox>,
+        child_index: usize,
+    },
+}
+
+impl<'box_tree> InlineBoxChildIter<'box_tree> {
+    fn from_formatting_context(
+        inline_formatting_context: &'box_tree InlineFormattingContext,
+    ) -> InlineBoxChildIter<'box_tree> {
+        InlineBoxChildIter::InlineFormattingContext(
+            inline_formatting_context.inline_level_boxes.iter(),
+        )
+    }
+
+    fn from_inline_level_box(
+        inline_level_box: ArcRefCell<InlineLevelBox>,
+    ) -> InlineBoxChildIter<'box_tree> {
+        InlineBoxChildIter::InlineBox {
+            inline_level_box,
+            child_index: 0,
+        }
+    }
+}
+
+impl<'box_tree> Iterator for InlineBoxChildIter<'box_tree> {
+    type Item = ArcRefCell<InlineLevelBox>;
+    fn next(&mut self) -> Option<ArcRefCell<InlineLevelBox>> {
+        match *self {
+            InlineBoxChildIter::InlineFormattingContext(ref mut iter) => iter.next().cloned(),
+            InlineBoxChildIter::InlineBox {
+                ref inline_level_box,
+                ref mut child_index,
+            } => match *inline_level_box.borrow() {
+                InlineLevelBox::InlineBox(ref inline_box) => {
+                    if *child_index >= inline_box.children.len() {
+                        return None;
+                    }
+
+                    let kid = inline_box.children[*child_index].clone();
+                    *child_index += 1;
+                    Some(kid)
+                },
+                _ => unreachable!(),
+            },
         }
     }
 }

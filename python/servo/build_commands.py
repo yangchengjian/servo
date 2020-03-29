@@ -10,6 +10,7 @@
 from __future__ import print_function, unicode_literals
 
 import datetime
+import locale
 import os
 import os.path as path
 import platform
@@ -309,6 +310,16 @@ class MachCommands(CommandBase):
                 self.msvc_package_dir("gstreamer-uwp"), arch['gst_root'],
                 "lib", "pkgconfig"
             )
+
+        if 'windows' in host:
+            process = subprocess.Popen('("%s" %s > nul) && "python" -c "import os; print(repr(os.environ))"' %
+                                       (os.path.join(vs_dirs['vcdir'], "Auxiliary", "Build", "vcvarsall.bat"), "x64"),
+                                       stdout=subprocess.PIPE, shell=True)
+            stdout, _ = process.communicate()
+            exitcode = process.wait()
+            encoding = locale.getpreferredencoding()  # See https://stackoverflow.com/a/9228117
+            if exitcode == 0:
+                os.environ.update(eval(stdout.decode(encoding)))
 
         # Ensure that GStreamer libraries are accessible when linking.
         if 'windows' in target_triple:
@@ -675,11 +686,12 @@ class MachCommands(CommandBase):
                 if not dev and not libsimpleservo:
                     call(["editbin", "/nologo", "/subsystem:windows", path.join(servo_exe_dir, "servo.exe")],
                          verbose=verbose)
-                # on msvc, we need to copy in some DLLs in to the servo.exe dir
+                # on msvc, we need to copy in some DLLs in to the servo.exe dir and the directory for unit tests.
                 for ssl_lib in ["libssl.dll", "libcrypto.dll"]:
-                    shutil.copy(path.join(env['OPENSSL_LIB_DIR'], "../bin", ssl_lib),
-                                servo_exe_dir)
-                # Search for the generated nspr4.dll
+                    ssl_path = path.join(env['OPENSSL_LIB_DIR'], "../bin", ssl_lib)
+                    shutil.copy(ssl_path, servo_exe_dir)
+                    shutil.copy(ssl_path, path.join(servo_exe_dir, "deps"))
+
                 build_path = path.join(servo_exe_dir, "build")
                 assert os.path.exists(build_path)
 

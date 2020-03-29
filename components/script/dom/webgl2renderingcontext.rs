@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding;
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextConstants as constants;
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextMethods;
 use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGLContextAttributes;
@@ -36,12 +35,14 @@ use crate::dom::webglsync::WebGLSync;
 use crate::dom::webgltexture::WebGLTexture;
 use crate::dom::webgltransformfeedback::WebGLTransformFeedback;
 use crate::dom::webgluniformlocation::WebGLUniformLocation;
+use crate::dom::webglvertexarrayobject::WebGLVertexArrayObject;
 use crate::dom::window::Window;
 use crate::js::conversions::ToJSValConvertible;
 use crate::script_runtime::JSContext;
 use canvas_traits::webgl::WebGLError::*;
 use canvas_traits::webgl::{
-    webgl_channel, GLContextAttributes, WebGLCommand, WebGLResult, WebGLVersion,
+    webgl_channel, GLContextAttributes, InternalFormatParameter, WebGLCommand, WebGLResult,
+    WebGLVersion,
 };
 use dom_struct::dom_struct;
 use euclid::default::{Point2D, Rect, Size2D};
@@ -50,11 +51,29 @@ use js::jsapi::{JSObject, Type};
 use js::jsval::{BooleanValue, DoubleValue, Int32Value, UInt32Value};
 use js::jsval::{JSVal, NullValue, ObjectValue, UndefinedValue};
 use js::rust::CustomAutoRooterGuard;
-use js::typedarray::{ArrayBufferView, CreateWith, Float32, Uint32, Uint32Array};
+use js::typedarray::{ArrayBufferView, CreateWith, Float32, Int32Array, Uint32, Uint32Array};
 use script_layout_interface::HTMLCanvasDataSource;
 use std::cell::Cell;
 use std::cmp;
 use std::ptr::{self, NonNull};
+
+#[unrooted_must_root_lint::must_root]
+#[derive(JSTraceable, MallocSizeOf)]
+struct IndexedBinding {
+    buffer: MutNullableDom<WebGLBuffer>,
+    start: Cell<i64>,
+    size: Cell<i64>,
+}
+
+impl IndexedBinding {
+    fn new() -> IndexedBinding {
+        IndexedBinding {
+            buffer: MutNullableDom::new(None),
+            start: Cell::new(0),
+            size: Cell::new(0),
+        }
+    }
+}
 
 #[dom_struct]
 pub struct WebGL2RenderingContext {
@@ -69,11 +88,15 @@ pub struct WebGL2RenderingContext {
     bound_pixel_unpack_buffer: MutNullableDom<WebGLBuffer>,
     bound_transform_feedback_buffer: MutNullableDom<WebGLBuffer>,
     bound_uniform_buffer: MutNullableDom<WebGLBuffer>,
+    indexed_uniform_buffer_bindings: Box<[IndexedBinding]>,
+    indexed_transform_feedback_buffer_bindings: Box<[IndexedBinding]>,
     current_transform_feedback: MutNullableDom<WebGLTransformFeedback>,
     texture_pack_row_length: Cell<usize>,
     texture_pack_skip_pixels: Cell<usize>,
     texture_pack_skip_rows: Cell<usize>,
     enable_rasterizer_discard: Cell<bool>,
+    default_fb_readbuffer: Cell<u32>,
+    default_fb_drawbuffer: Cell<u32>,
 }
 
 fn typedarray_elem_size(typeid: Type) -> usize {
@@ -82,6 +105,7 @@ fn typedarray_elem_size(typeid: Type) -> usize {
         Type::Int16 | Type::Uint16 => 2,
         Type::Int32 | Type::Uint32 | Type::Float32 => 4,
         Type::Int64 | Type::Float64 => 8,
+        Type::BigInt64 | Type::BigUint64 => 8,
         Type::MaxTypedArrayViewType => unreachable!(),
     }
 }
@@ -110,6 +134,15 @@ impl WebGL2RenderingContext {
             .map(|_| Default::default())
             .collect::<Vec<_>>()
             .into();
+        let indexed_uniform_buffer_bindings = (0..base.limits().max_uniform_buffer_bindings)
+            .map(|_| IndexedBinding::new())
+            .collect::<Vec<_>>()
+            .into();
+        let indexed_transform_feedback_buffer_bindings =
+            (0..base.limits().max_transform_feedback_separate_attribs)
+                .map(|_| IndexedBinding::new())
+                .collect::<Vec<_>>()
+                .into();
 
         Some(WebGL2RenderingContext {
             reflector_: Reflector::new(),
@@ -123,11 +156,15 @@ impl WebGL2RenderingContext {
             bound_pixel_unpack_buffer: MutNullableDom::new(None),
             bound_transform_feedback_buffer: MutNullableDom::new(None),
             bound_uniform_buffer: MutNullableDom::new(None),
+            indexed_uniform_buffer_bindings,
+            indexed_transform_feedback_buffer_bindings,
             current_transform_feedback: MutNullableDom::new(None),
             texture_pack_row_length: Cell::new(0),
             texture_pack_skip_pixels: Cell::new(0),
             texture_pack_skip_rows: Cell::new(0),
             enable_rasterizer_discard: Cell::new(false),
+            default_fb_readbuffer: Cell::new(constants::BACK),
+            default_fb_drawbuffer: Cell::new(constants::BACK),
         })
     }
 
@@ -138,15 +175,18 @@ impl WebGL2RenderingContext {
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        WebGL2RenderingContext::new_inherited(window, canvas, size, attrs).map(|ctx| {
-            reflect_dom_object(Box::new(ctx), window, WebGL2RenderingContextBinding::Wrap)
-        })
+        WebGL2RenderingContext::new_inherited(window, canvas, size, attrs)
+            .map(|ctx| reflect_dom_object(Box::new(ctx), window))
     }
 }
 
 impl WebGL2RenderingContext {
     pub fn recreate(&self, size: Size2D<u32>) {
         self.base.recreate(size)
+    }
+
+    pub fn current_vao(&self) -> DomRoot<WebGLVertexArrayObject> {
+        self.base.current_vao_webgl2()
     }
 
     pub fn base_context(&self) -> DomRoot<WebGLRenderingContext> {
@@ -161,6 +201,7 @@ impl WebGL2RenderingContext {
             constants::PIXEL_UNPACK_BUFFER => Ok(self.bound_pixel_unpack_buffer.get()),
             constants::TRANSFORM_FEEDBACK_BUFFER => Ok(self.bound_transform_feedback_buffer.get()),
             constants::UNIFORM_BUFFER => Ok(self.bound_uniform_buffer.get()),
+            constants::ELEMENT_ARRAY_BUFFER => Ok(self.current_vao().element_array_buffer().get()),
             _ => self.base.bound_buffer(target),
         }
     }
@@ -179,7 +220,7 @@ impl WebGL2RenderingContext {
 
     fn unbind_from(&self, slot: &MutNullableDom<WebGLBuffer>, buffer: &WebGLBuffer) {
         if slot.get().map_or(false, |b| buffer == &*b) {
-            buffer.decrement_attached_counter();
+            buffer.decrement_attached_counter(false);
             slot.set(None);
         }
     }
@@ -302,6 +343,15 @@ impl WebGL2RenderingContext {
         handle_potential_webgl_error!(self.base, self.base.validate_framebuffer(), return);
 
         if self.bound_pixel_pack_buffer.get().is_some() {
+            return self.base.webgl_error(InvalidOperation);
+        }
+
+        let fb_slot = self.base.get_draw_framebuffer_slot();
+        let fb_readbuffer_valid = match fb_slot.get() {
+            Some(fb) => fb.attachment(fb.read_buffer()).is_some(),
+            None => self.default_fb_readbuffer.get() != constants::NONE,
+        };
+        if !fb_readbuffer_valid {
             return self.base.webgl_error(InvalidOperation);
         }
 
@@ -745,12 +795,41 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
                     self.current_transform_feedback.get()
                 );
             },
+            constants::ELEMENT_ARRAY_BUFFER_BINDING => unsafe {
+                let buffer = self.current_vao().element_array_buffer().get();
+                return optional_root_object_to_js_or_null!(*cx, buffer);
+            },
+            constants::VERTEX_ARRAY_BINDING => unsafe {
+                let vao = self.current_vao();
+                let vao = vao.id().map(|_| &*vao);
+                return optional_root_object_to_js_or_null!(*cx, vao);
+            },
             // NOTE: DRAW_FRAMEBUFFER_BINDING is the same as FRAMEBUFFER_BINDING, handled on the WebGL1 side
             constants::READ_FRAMEBUFFER_BINDING => unsafe {
                 return optional_root_object_to_js_or_null!(
                     *cx,
                     &self.base.get_read_framebuffer_slot().get()
                 );
+            },
+            constants::READ_BUFFER => {
+                let buffer = match self.base.get_read_framebuffer_slot().get() {
+                    Some(fb) => fb.read_buffer(),
+                    None => self.default_fb_readbuffer.get(),
+                };
+                return UInt32Value(buffer);
+            },
+            constants::DRAW_BUFFER0..=constants::DRAW_BUFFER15 => {
+                let buffer = match self.base.get_read_framebuffer_slot().get() {
+                    Some(fb) => {
+                        let idx = parameter - constants::DRAW_BUFFER0;
+                        fb.draw_buffer_i(idx as usize)
+                    },
+                    None if parameter == constants::DRAW_BUFFER0 => {
+                        self.default_fb_readbuffer.get()
+                    },
+                    None => constants::NONE,
+                };
+                return UInt32Value(buffer);
             },
             _ => {},
         }
@@ -910,6 +989,7 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
 
     /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.2
     fn BindBuffer(&self, target: u32, buffer: Option<&WebGLBuffer>) {
+        let current_vao;
         let slot = match target {
             constants::COPY_READ_BUFFER => &self.bound_copy_read_buffer,
             constants::COPY_WRITE_BUFFER => &self.bound_copy_write_buffer,
@@ -917,6 +997,10 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
             constants::PIXEL_UNPACK_BUFFER => &self.bound_pixel_unpack_buffer,
             constants::TRANSFORM_FEEDBACK_BUFFER => &self.bound_transform_feedback_buffer,
             constants::UNIFORM_BUFFER => &self.bound_uniform_buffer,
+            constants::ELEMENT_ARRAY_BUFFER => {
+                current_vao = self.current_vao();
+                current_vao.element_array_buffer()
+            },
             _ => return self.base.BindBuffer(target, buffer),
         };
         self.base.bind_buffer_maybe(&slot, target, buffer);
@@ -1377,6 +1461,11 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         self.base.CreateShader(shader_type)
     }
 
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.17
+    fn CreateVertexArray(&self) -> Option<DomRoot<WebGLVertexArrayObject>> {
+        self.base.create_vertex_array_webgl2()
+    }
+
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.5
     fn DeleteBuffer(&self, buffer: Option<&WebGLBuffer>) {
         let buffer = match buffer {
@@ -1387,7 +1476,7 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         if buffer.is_marked_for_deletion() {
             return;
         }
-        self.base.current_vao().unbind_buffer(buffer);
+        self.current_vao().unbind_buffer(buffer);
         self.unbind_from(&self.base.array_buffer_slot(), &buffer);
         self.unbind_from(&self.bound_copy_read_buffer, &buffer);
         self.unbind_from(&self.bound_copy_write_buffer, &buffer);
@@ -1395,6 +1484,14 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         self.unbind_from(&self.bound_pixel_unpack_buffer, &buffer);
         self.unbind_from(&self.bound_transform_feedback_buffer, &buffer);
         self.unbind_from(&self.bound_uniform_buffer, &buffer);
+
+        for binding in self.indexed_uniform_buffer_bindings.iter() {
+            self.unbind_from(&binding.buffer, &buffer);
+        }
+        for binding in self.indexed_transform_feedback_buffer_bindings.iter() {
+            self.unbind_from(&binding.buffer, &buffer);
+        }
+
         buffer.mark_for_deletion(false);
     }
 
@@ -1421,6 +1518,11 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9
     fn DeleteShader(&self, shader: Option<&WebGLShader>) {
         self.base.DeleteShader(shader)
+    }
+
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.17
+    fn DeleteVertexArray(&self, vertex_array: Option<&WebGLVertexArrayObject>) {
+        self.base.delete_vertex_array_webgl2(vertex_array);
     }
 
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.11
@@ -1464,6 +1566,12 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10
     fn GetAttribLocation(&self, program: &WebGLProgram, name: DOMString) -> i32 {
         self.base.GetAttribLocation(program, name)
+    }
+
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.7
+    fn GetFragDataLocation(&self, program: &WebGLProgram, name: DOMString) -> i32 {
+        handle_potential_webgl_error!(self.base, self.base.validate_ownership(program), return -1);
+        handle_potential_webgl_error!(self.base, program.get_frag_data_location(name), -1)
     }
 
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9
@@ -1511,6 +1619,46 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     ) -> Option<DomRoot<WebGLShaderPrecisionFormat>> {
         self.base
             .GetShaderPrecisionFormat(shader_type, precision_type)
+    }
+
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.2
+    #[allow(unsafe_code)]
+    fn GetIndexedParameter(&self, cx: JSContext, target: u32, index: u32) -> JSVal {
+        let bindings = match target {
+            constants::TRANSFORM_FEEDBACK_BUFFER_BINDING |
+            constants::TRANSFORM_FEEDBACK_BUFFER_SIZE |
+            constants::TRANSFORM_FEEDBACK_BUFFER_START => {
+                &self.indexed_transform_feedback_buffer_bindings
+            },
+            constants::UNIFORM_BUFFER_BINDING |
+            constants::UNIFORM_BUFFER_SIZE |
+            constants::UNIFORM_BUFFER_START => &self.indexed_uniform_buffer_bindings,
+            _ => {
+                self.base.webgl_error(InvalidEnum);
+                return NullValue();
+            },
+        };
+
+        let binding = match bindings.get(index as usize) {
+            Some(binding) => binding,
+            None => {
+                self.base.webgl_error(InvalidValue);
+                return NullValue();
+            },
+        };
+
+        match target {
+            constants::TRANSFORM_FEEDBACK_BUFFER_BINDING | constants::UNIFORM_BUFFER_BINDING => unsafe {
+                optional_root_object_to_js_or_null!(*cx, binding.buffer.get())
+            },
+            constants::TRANSFORM_FEEDBACK_BUFFER_START | constants::UNIFORM_BUFFER_START => {
+                Int32Value(binding.start.get() as _)
+            },
+            constants::TRANSFORM_FEEDBACK_BUFFER_SIZE | constants::UNIFORM_BUFFER_SIZE => {
+                Int32Value(binding.size.get() as _)
+            },
+            _ => unreachable!(),
+        }
     }
 
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10
@@ -1574,6 +1722,11 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.8
     fn IsTexture(&self, texture: Option<&WebGLTexture>) -> bool {
         self.base.IsTexture(texture)
+    }
+
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.17
+    fn IsVertexArray(&self, vertex_array: Option<&WebGLVertexArrayObject>) -> bool {
+        self.base.is_vertex_array_webgl2(vertex_array)
     }
 
     /// https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.3
@@ -2338,6 +2491,9 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
                     &uniform_get(triple, WebGLCommand::GetUniformFloat4x3),
                 )
             },
+            constants::SAMPLER_3D | constants::SAMPLER_2D_ARRAY => {
+                Int32Value(uniform_get(triple, WebGLCommand::GetUniformInt))
+            },
             _ => self.base.GetUniform(cx, program, location),
         }
     }
@@ -2956,6 +3112,11 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         }
     }
 
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.17
+    fn BindVertexArray(&self, array: Option<&WebGLVertexArrayObject>) {
+        self.base.bind_vertex_array_webgl2(array);
+    }
+
     /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.13
     fn SamplerParameteri(&self, sampler: &WebGLSampler, pname: u32, param: i32) {
         handle_potential_webgl_error!(self.base, self.base.validate_ownership(sampler), return);
@@ -3205,20 +3366,21 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
 
     /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.16
     fn BindBufferBase(&self, target: u32, index: u32, buffer: Option<&WebGLBuffer>) {
-        let (bind_limit, slot) = match target {
+        let (generic_slot, indexed_bindings) = match target {
             constants::TRANSFORM_FEEDBACK_BUFFER => (
-                self.base.limits().max_transform_feedback_separate_attribs,
                 &self.bound_transform_feedback_buffer,
+                &self.indexed_transform_feedback_buffer_bindings,
             ),
             constants::UNIFORM_BUFFER => (
-                self.base.limits().max_uniform_buffer_bindings,
                 &self.bound_uniform_buffer,
+                &self.indexed_uniform_buffer_bindings,
             ),
             _ => return self.base.webgl_error(InvalidEnum),
         };
-        if index >= bind_limit {
-            return self.base.webgl_error(InvalidValue);
-        }
+        let indexed_binding = match indexed_bindings.get(index as usize) {
+            Some(slot) => slot,
+            None => return self.base.webgl_error(InvalidValue),
+        };
 
         if let Some(buffer) = buffer {
             handle_potential_webgl_error!(self.base, self.base.validate_ownership(buffer), return);
@@ -3227,6 +3389,9 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
                 return self.base.webgl_error(InvalidOperation);
             }
             handle_potential_webgl_error!(self.base, buffer.set_target_maybe(target), return);
+
+            // for both the generic and the indexed bindings
+            buffer.increment_attached_counter();
             buffer.increment_attached_counter();
         }
 
@@ -3235,11 +3400,15 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
             index,
             buffer.map(|b| b.id()),
         ));
-        if let Some(old) = slot.get() {
-            old.decrement_attached_counter();
-        }
 
-        slot.set(buffer);
+        for slot in &[&generic_slot, &indexed_binding.buffer] {
+            if let Some(old) = slot.get() {
+                old.decrement_attached_counter(false);
+            }
+            slot.set(buffer);
+        }
+        indexed_binding.start.set(0);
+        indexed_binding.size.set(0);
     }
 
     /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.16
@@ -3251,20 +3420,21 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         offset: i64,
         size: i64,
     ) {
-        let (bind_limit, slot) = match target {
+        let (generic_slot, indexed_bindings) = match target {
             constants::TRANSFORM_FEEDBACK_BUFFER => (
-                self.base.limits().max_transform_feedback_separate_attribs,
                 &self.bound_transform_feedback_buffer,
+                &self.indexed_transform_feedback_buffer_bindings,
             ),
             constants::UNIFORM_BUFFER => (
-                self.base.limits().max_uniform_buffer_bindings,
                 &self.bound_uniform_buffer,
+                &self.indexed_uniform_buffer_bindings,
             ),
             _ => return self.base.webgl_error(InvalidEnum),
         };
-        if index >= bind_limit {
-            return self.base.webgl_error(InvalidValue);
-        }
+        let indexed_binding = match indexed_bindings.get(index as usize) {
+            Some(slot) => slot,
+            None => return self.base.webgl_error(InvalidValue),
+        };
 
         if offset < 0 || size < 0 {
             return self.base.webgl_error(InvalidValue);
@@ -3295,6 +3465,9 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
                 return self.base.webgl_error(InvalidOperation);
             }
             handle_potential_webgl_error!(self.base, buffer.set_target_maybe(target), return);
+
+            // for both the generic and the indexed bindings
+            buffer.increment_attached_counter();
             buffer.increment_attached_counter();
         }
 
@@ -3305,11 +3478,15 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
             offset,
             size,
         ));
-        if let Some(old) = slot.get() {
-            old.decrement_attached_counter();
-        }
 
-        slot.set(buffer);
+        for slot in &[&generic_slot, &indexed_binding.buffer] {
+            if let Some(old) = slot.get() {
+                old.decrement_attached_counter(false);
+            }
+            slot.set(buffer);
+        }
+        indexed_binding.start.set(offset);
+        indexed_binding.size.set(size);
     }
 
     /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.16
@@ -3612,6 +3789,100 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         }
     }
 
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.5
+    #[allow(unsafe_code)]
+    fn GetInternalformatParameter(
+        &self,
+        cx: JSContext,
+        target: u32,
+        internal_format: u32,
+        pname: u32,
+    ) -> JSVal {
+        if target != constants::RENDERBUFFER {
+            self.base.webgl_error(InvalidEnum);
+            return NullValue();
+        }
+
+        match handle_potential_webgl_error!(
+            self.base,
+            InternalFormatParameter::from_u32(pname),
+            return NullValue()
+        ) {
+            InternalFormatParameter::IntVec(param) => unsafe {
+                let (sender, receiver) = webgl_channel().unwrap();
+                self.base
+                    .send_command(WebGLCommand::GetInternalFormatIntVec(
+                        target,
+                        internal_format,
+                        param,
+                        sender,
+                    ));
+
+                rooted!(in(*cx) let mut rval = ptr::null_mut::<JSObject>());
+                let _ = Int32Array::create(
+                    *cx,
+                    CreateWith::Slice(&receiver.recv().unwrap()),
+                    rval.handle_mut(),
+                )
+                .unwrap();
+                ObjectValue(rval.get())
+            },
+        }
+    }
+
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.5
+    fn RenderbufferStorageMultisample(
+        &self,
+        target: u32,
+        samples: i32,
+        internal_format: u32,
+        width: i32,
+        height: i32,
+    ) {
+        self.base
+            .renderbuffer_storage(target, samples, internal_format, width, height)
+    }
+
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.4
+    fn ReadBuffer(&self, src: u32) {
+        match src {
+            constants::BACK | constants::NONE => {},
+            _ if self.base.valid_color_attachment_enum(src) => {},
+            _ => return self.base.webgl_error(InvalidEnum),
+        }
+
+        if let Some(fb) = self.base.get_read_framebuffer_slot().get() {
+            handle_potential_webgl_error!(self.base, fb.set_read_buffer(src), return)
+        } else {
+            match src {
+                constants::NONE | constants::BACK => {},
+                _ => return self.base.webgl_error(InvalidOperation),
+            }
+
+            self.default_fb_readbuffer.set(src);
+            self.base.send_command(WebGLCommand::ReadBuffer(src));
+        }
+    }
+
+    /// https://www.khronos.org/registry/webgl/specs/latest/2.0/#3.7.11
+    fn DrawBuffers(&self, buffers: Vec<u32>) {
+        if let Some(fb) = self.base.get_draw_framebuffer_slot().get() {
+            handle_potential_webgl_error!(self.base, fb.set_draw_buffers(buffers), return)
+        } else {
+            if buffers.len() != 1 {
+                return self.base.webgl_error(InvalidOperation);
+            }
+
+            match buffers[0] {
+                constants::NONE | constants::BACK => {},
+                _ => return self.base.webgl_error(InvalidOperation),
+            }
+
+            self.default_fb_drawbuffer.set(buffers[0]);
+            self.base.send_command(WebGLCommand::DrawBuffers(buffers));
+        }
+    }
+
 
     fn DrawBackground(&self) {
         self.base.DrawBackground();
@@ -3652,7 +3923,6 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     #[allow(unsafe_code)]
     fn GetMPMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
         self.base.GetMPMatrix(cx)
-    }
 }
 
 impl LayoutCanvasWebGLRenderingContextHelpers for LayoutDom<WebGL2RenderingContext> {

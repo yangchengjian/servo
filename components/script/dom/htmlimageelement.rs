@@ -8,7 +8,6 @@ use crate::dom::attr::Attr;
 use crate::dom::bindings::cell::{DomRefCell, RefMut};
 use crate::dom::bindings::codegen::Bindings::DOMRectBinding::DOMRectBinding::DOMRectMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementBinding::ElementMethods;
-use crate::dom::bindings::codegen::Bindings::HTMLImageElementBinding;
 use crate::dom::bindings::codegen::Bindings::HTMLImageElementBinding::HTMLImageElementMethods;
 use crate::dom::bindings::codegen::Bindings::MouseEventBinding::MouseEventMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeBinding::NodeMethods;
@@ -167,13 +166,10 @@ impl HTMLImageElement {
     // https://html.spec.whatwg.org/multipage/#check-the-usability-of-the-image-argument
     pub fn is_usable(&self) -> Fallible<bool> {
         // If image has an intrinsic width or intrinsic height (or both) equal to zero, then return bad.
-        match &self.current_request.borrow().image {
-            Some(image) => {
-                if image.width == 0 || image.height == 0 {
-                    return Ok(false);
-                }
-            },
-            None => return Ok(false),
+        if let Some(image) = &self.current_request.borrow().image {
+            if image.width == 0 || image.height == 0 {
+                return Ok(false);
+            }
         }
 
         match self.current_request.borrow().state {
@@ -1264,7 +1260,6 @@ impl HTMLImageElement {
                 local_name, prefix, document,
             )),
             document,
-            HTMLImageElementBinding::Wrap,
         )
     }
 

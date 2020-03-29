@@ -556,6 +556,14 @@ std::optional<hstring> ServoControl::OnServoPromptInput(winrt::hstring message,
   return string;
 }
 
+void ServoControl::OnServoDevtoolsStarted(bool success,
+                                          const unsigned int port) {
+  RunOnUIThread([=] {
+    auto status = success ? DevtoolsStatus::Running : DevtoolsStatus::Failed;
+    mOnDevtoolsStatusChangedEvent(status, port);
+  });
+}
+
 template <typename Callable> void ServoControl::RunOnUIThread(Callable cb) {
   Dispatcher().RunAsync(CoreDispatcherPriority::High, cb);
 }
