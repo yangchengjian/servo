@@ -427,6 +427,10 @@ impl HostTrait for HostCallbacks {
         Some(default)
     }
 
+    fn show_context_menu(&self, items: Vec<String>) {
+
+    }
+
     fn on_load_started(&self) {
         debug!("on_load_started");
         let env = self.jvm.get_env().unwrap();

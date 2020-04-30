@@ -3991,6 +3991,7 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     #[allow(unsafe_code)]
     fn GetMPMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
         self.base.GetMPMatrix(cx)
+    }
 }
 
 impl LayoutCanvasWebGLRenderingContextHelpers for LayoutDom<'_, WebGL2RenderingContext> {
