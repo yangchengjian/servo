@@ -3952,6 +3952,10 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     }
 
 
+    fn OnDisplayChanged(&self, display_rotation: i32, width: i32, height: i32) {
+        self.base.OnDisplayChanged(display_rotation, width, height);
+    }
+
     fn DrawBackground(&self) {
         self.base.DrawBackground();
     }

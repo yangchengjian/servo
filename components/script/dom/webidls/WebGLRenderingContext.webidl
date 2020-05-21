@@ -694,6 +694,7 @@ interface mixin WebGLRenderingContextBase
     void viewport(GLint x, GLint y, GLsizei width, GLsizei height);
 
         //*********************   AR    ******************************
+                void onDisplayChanged(GLint display_rotation, GLint width, GLint height);
                 void drawBackground();
         //        void projectViewMatrix(WebGLUniformLocation? location);
         //        void projectMatrix(WebGLUniformLocation? location);

@@ -4459,6 +4459,10 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     }
 
 
+    fn OnDisplayChanged(&self, display_rotation: i32, width: i32, height: i32) {
+        self.send_command(WebGLCommand::OnDisplayChanged(display_rotation, width, height));
+    }
+
     fn DrawBackground(&self) {
         self.send_command(WebGLCommand::DrawBackground);
     }

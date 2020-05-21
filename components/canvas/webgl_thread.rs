@@ -320,6 +320,10 @@ impl WebGLThread {
             },
             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
                 match &command {
+                    WebGLCommand::OnDisplayChanged(display_rotation, width, height) => {
+                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::OnDisplayChanged display_rotation = {}, width = {}, height = {}", &display_rotation, &width, &height));
+                        self.handle_webar_command(ctx_id, WebARCommand::OnDisplayChanged(*display_rotation, *width, *height));
+                    }
                     WebGLCommand::DrawBackground => {
                         ::arcore_jni::log("webgl_thread::WebGLCommand::DrawBackground");
                         self.handle_webar_command(ctx_id, WebARCommand::OnDraw);
@@ -1181,6 +1185,7 @@ impl WebGLImpl {
         debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
 
         match command {
+            WebGLCommand::OnDisplayChanged(_, _, _) => (),
             WebGLCommand::DrawBackground => (),
             WebGLCommand::ProjectViewMatrix(_) => (),
             WebGLCommand::ProjectMatrix(_) => (),

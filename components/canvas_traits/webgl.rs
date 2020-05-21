@@ -267,6 +267,7 @@ pub enum WebARCommand {
 /// WebGL Commands for a specific WebGLContext
 #[derive(Debug, Deserialize, Serialize)]
 pub enum WebGLCommand {
+    OnDisplayChanged(i32, i32, i32),
     DrawBackground,
     ProjectViewMatrix(i32),
     ProjectMatrix(i32),
