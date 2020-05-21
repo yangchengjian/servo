@@ -6,6 +6,7 @@
 package org.mozilla.servoview;
 
 import android.app.Activity;
+import android.content.res.AssetManager;
 
 /**
  * Maps /ports/libsimpleservo API
@@ -118,5 +119,7 @@ public class JNIServo {
 
         void onMediaSessionSetPositionState(float duration, float position, float playbackRate);
     }
+
+    public native void initAssetManager(AssetManager assetManager);
 }
 

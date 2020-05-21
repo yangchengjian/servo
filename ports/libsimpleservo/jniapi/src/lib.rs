@@ -427,7 +427,7 @@ impl HostTrait for HostCallbacks {
         Some(default)
     }
 
-    fn show_context_menu(&self, items: Vec<String>) {
+    fn show_context_menu(&self, _items: Vec<String>) {
 
     }
 

@@ -65,6 +65,8 @@ public class MainActivity extends Activity implements Servo.Client {
         mServoView.setClient(this);
         mServoView.requestFocus();
 
+        JniInterface.assetManager = getAssets();
+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
           File sdcard = getExternalFilesDir("");
           String host = sdcard.toPath().resolve("android_hosts").toString();

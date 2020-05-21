@@ -7,6 +7,7 @@ package org.mozilla.servoview;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.res.AssetManager;
 import android.util.Log;
 
 import java.util.concurrent.Callable;
@@ -18,6 +19,9 @@ import org.mozilla.servoview.JNIServo.ServoOptions;
 
 public class Servo {
     private static final String LOGTAG = "Servo";
+
+    static AssetManager assetManager;
+
     private JNIServo mJNI = new JNIServo();
     private RunCallback mRunCallback;
     private boolean mShuttingDown;
@@ -35,6 +39,8 @@ public class Servo {
         mRunCallback = runCallback;
 
         mServoCallbacks = new Callbacks(client, gfxcb);
+
+        mJNI.initAssetManager(assetManager);
 
         mRunCallback.inGLThread(() -> {
             mJNI.init(activity, options, mServoCallbacks);
