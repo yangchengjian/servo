@@ -46,4 +46,4 @@ surfman-chains = "0.3"
 surfman-chains-api = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
-arcore_jni = {path = "../../ports/arcore_jni"}
+arcore_rs = {path = "../../ports/arcore_rs"}

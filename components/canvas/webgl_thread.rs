@@ -321,117 +321,53 @@ impl WebGLThread {
             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
                 match &command {
                     WebGLCommand::OnDisplayChanged(display_rotation, width, height) => {
-                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::OnDisplayChanged display_rotation = {}, width = {}, height = {}", &display_rotation, &width, &height));
+                        ::arcore_rs::log::d(&format!("webgl_thread::WebGLCommand::OnDisplayChanged display_rotation = {}, width = {}, height = {}", &display_rotation, &width, &height));
                         self.handle_webar_command(ctx_id, WebARCommand::OnDisplayChanged(*display_rotation, *width, *height));
                     }
                     WebGLCommand::DrawBackground => {
-                        ::arcore_jni::log("webgl_thread::WebGLCommand::DrawBackground");
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::DrawBackground");
                         self.handle_webar_command(ctx_id, WebARCommand::OnDraw);
                     }
                     WebGLCommand::GetProjectMatrix(result_sender) => {
-                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetProjectMatrix");
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetProjectMatrix");
 
                         let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
                         let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&arcore.proj_mat4x4);
+                        vector.extend_from_slice(&arcore.get_proj_matrix());
                         result_sender.send(vector);
                     }
                     WebGLCommand::GetViewMatrix(result_sender) => {
-                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetViewMatrix");
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetViewMatrix");
 
                         let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
                         let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&arcore.view_mat4x4);
+                        vector.extend_from_slice(&arcore.get_view_matrix());
                         result_sender.send(vector);
                     }
                     WebGLCommand::GetModelMatrix(result_sender) => {
-                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetModelMatrix");
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetModelMatrix");
 
                         let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
                         let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&arcore.mode_mat4x4);
+                        vector.extend_from_slice(&arcore.get_mode_matrix());
                         result_sender.send(vector);
                     }
                     WebGLCommand::GetMVMatrix(result_sender) => {
-                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetMVMatrix");
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetMVMatrix");
 
                         let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
                         let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&arcore.mv_mat4x4);
+                        vector.extend_from_slice(&arcore.get_vm_matrix());
                         result_sender.send(vector);
                     }
                     WebGLCommand::GetMPMatrix(result_sender) => {
-                        ::arcore_jni::log("webgl_thread::WebGLCommand::GetMVMatrix");
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetMVMatrix");
 
                         let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
                         let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&arcore.mp_mat4x4);
+                        vector.extend_from_slice(&arcore.get_pm_matrix());
                         result_sender.send(vector);
                     }
-//                    WebGLCommand::ProjectViewMatrix(location) => {
-//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ProjectViewMatrix");
-//
-//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
-//                        let arcore = &info.arcore;
-////                        let location = arcore.uniform_mvp_mat_;
-//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectViewMatrix  location = {}", location));
-//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectViewMatrix  mvp = {:?}", &arcore.pv));
-//                        if location == -1 {
-//                            ()
-//                        } else {
-//                            let data = Self::make_current_if_needed(
-//                                &self.device,
-//                                ctx_id,
-//                                &self.contexts,
-//                                &mut self.bound_context_id,
-//                            ).expect("WebGLContext not found");
-//                            data.gl.uniform_matrix_4fv(location, false, &arcore.pv);
-//                        };
-//                    }
-//                    WebGLCommand::ProjectMatrix(*location) => {
-//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ProjectMatrix");
-//
-//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
-//                        let arcore = &info.arcore;
-//
-////                        let location = &*arcore.uniform_mvp_mat_ as i32;
-//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectMatrix  location = {}", location));
-//                        ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ProjectMatrix  mvp = {:?}", &arcore.proj_mat4x4));
-//                        if location == -1 {
-//                            ()
-//                        } else {
-//                            let data = Self::make_current_if_needed(
-//                                &self.device,
-//                                ctx_id,
-//                                &self.contexts,
-//                                &mut self.bound_context_id,
-//                            ).expect("WebGLContext not found");
-//                            data.gl.uniform_matrix_4fv(location, false, &arcore.proj_mat4x4);
-//                        };
-//                    }
-//                    WebGLCommand::ViewMatrix(*location) => {
-//                        ::arcore_jni::log("webgl_thread::WebGLCommand::ViewMatrix");
-//
-//                        let info = self.cached_context_info.get_mut(&ctx_id).unwrap();
-//                        let arcore = &info.arcore;
-//                        if let Some(ctx) = Self::make_current_if_needed(&self.device, ctx_id, &self.contexts, &mut self.bound_context_id) {
-//                            //                            let location = arcore.uniform_mvp_mat_;
-//                            ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ViewMatrix  location = {}", location));
-//                            ::arcore_jni::log(&format!("webgl_thread::WebGLCommand::ViewMatrix  mvp = {:?}", &arcore.view_mat4x4));
-//                            if location == -1 {
-//                                ()
-//                            } else {
-//                                let data = Self::make_current_if_needed(
-//                                    &self.device,
-//                                    ctx_id,
-//                                    &self.contexts,
-//                                    &mut self.bound_context_id,
-//                                ).expect("WebGLContext not found");
-//                                data.gl.uniform_matrix_4fv(location, false, &arcore.view_mat4x4);
-//                            };
-//                        }
-//                    }
-
                     _ => {}
                 }
                 self.handle_webgl_command(ctx_id, command, backtrace);
@@ -691,7 +627,7 @@ impl WebGLThread {
             texture_target,
         );
 
-        let mut arcore = ::arcore_jni::init_arcore();
+        let mut arcore = ::arcore_rs::init_arcore();
         let data = Self::make_current_if_needed(
             &self.device,
             id,
@@ -1146,7 +1082,7 @@ impl Drop for WebGLThread {
 struct WebGLContextInfo {
     /// Currently used WebRender image key.
     image_key: webrender_api::ImageKey,
-    arcore: ::arcore_jni::ArCore,
+    arcore: ::arcore_rs::ArCore,
 }
 
 // TODO(pcwalton): Add `GL_TEXTURE_EXTERNAL_OES`?
