@@ -3956,21 +3956,13 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         self.base.OnDisplayChanged(display_rotation, width, height);
     }
 
+    fn OnTouched(&self, x: i32, y: i32) -> i32 {
+        self.base.OnTouched(x, y)
+    }
+
     fn DrawBackground(&self) {
         self.base.DrawBackground();
     }
-
-//    fn ProjectViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
-//        self.base.ProjectViewMatrix(location);
-//    }
-//
-//    fn ProjectMatrix(&self, location: Option<&WebGLUniformLocation>) {
-//        self.base.ProjectMatrix(location);
-//    }
-//
-//    fn ViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
-//        self.base.ViewMatrix(location);
-//    }
 
     #[allow(unsafe_code)]
     fn GetProjectMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
@@ -3983,18 +3975,18 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     }
 
     #[allow(unsafe_code)]
-    fn GetModelMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
-        self.base.GetModelMatrix(cx)
+    fn GetModelMatrixOnPlane(&self, cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
+        self.base.GetModelMatrixOnPlane(cx, index)
     }
 
     #[allow(unsafe_code)]
-    fn GetMVMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
-        self.base.GetMVMatrix(cx)
+    fn GetModelMatrixOnImage(&self, cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
+        self.base.GetModelMatrixOnImage(cx, index)
     }
 
     #[allow(unsafe_code)]
-    fn GetMPMatrix(&self, cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
-        self.base.GetMPMatrix(cx)
+    fn GetViewModelMatrixOnPlane(&self, cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
+        self.base.GetViewModelMatrixOnPlane(cx, index)
     }
 }
 

@@ -695,15 +695,14 @@ interface mixin WebGLRenderingContextBase
 
         //*********************   AR    ******************************
                 void onDisplayChanged(GLint display_rotation, GLint width, GLint height);
+                GLint onTouched(GLint x, GLint y);
                 void drawBackground();
-        //        void projectViewMatrix(WebGLUniformLocation? location);
-        //        void projectMatrix(WebGLUniformLocation? location);
-        //        void viewMatrix(WebGLUniformLocation? location);
                 Float32Array getProjectMatrix();
                 Float32Array getViewMatrix();
-                Float32Array getModelMatrix();
-                Float32Array getMVMatrix();
-                Float32Array getMPMatrix();
+                Float32Array getModelMatrixOnPlane(GLint index);
+                Float32Array getModelMatrixOnImage(GLint index);
+                Float32Array getViewModelMatrixOnPlane(GLint index);
+
         //*************************************************************
 };
 

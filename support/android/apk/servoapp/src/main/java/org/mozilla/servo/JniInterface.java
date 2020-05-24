@@ -25,4 +25,7 @@ public class JniInterface {
     }
   }
 
+  public static void loadTexture(int target, Bitmap bitmap) {
+    GLUtils.texImage2D(target, 0, bitmap, 0);
+  }
 }

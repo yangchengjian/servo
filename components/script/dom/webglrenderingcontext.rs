@@ -4463,21 +4463,15 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
         self.send_command(WebGLCommand::OnDisplayChanged(display_rotation, width, height));
     }
 
+    fn OnTouched(&self, x: i32, y: i32) -> i32 {
+        let (sender, receiver) = webgl_channel().unwrap();
+        self.send_command(WebGLCommand::OnTouched(sender, x, y));
+        receiver.recv().unwrap()
+    }
+
     fn DrawBackground(&self) {
         self.send_command(WebGLCommand::DrawBackground);
     }
-
-//    fn ProjectViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
-//        self.send_command(WebGLCommand::ProjectViewMatrix(location.unwrap().id()));
-//    }
-//
-//    fn ProjectMatrix(&self, location: Option<&WebGLUniformLocation>) {
-//        self.send_command(WebGLCommand::ProjectMatrix(location.unwrap().id()));
-//    }
-//
-//    fn ViewMatrix(&self, location: Option<&WebGLUniformLocation>) {
-//        self.send_command(WebGLCommand::ViewMatrix(location.unwrap().id()));
-//    }
 
     #[allow(unsafe_code)]
     fn GetProjectMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
@@ -4508,10 +4502,10 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     }
 
     #[allow(unsafe_code)]
-    fn GetModelMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+    fn GetModelMatrixOnPlane(&self, _cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetModelMatrix(sender));
+        self.send_command(WebGLCommand::GetModelMatrixOnPlane(sender, index));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();
@@ -4522,10 +4516,10 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     }
 
     #[allow(unsafe_code)]
-    fn GetMVMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+    fn GetModelMatrixOnImage(&self, _cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetMVMatrix(sender));
+        self.send_command(WebGLCommand::GetModelMatrixOnImage(sender, index));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();
@@ -4536,10 +4530,10 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     }
 
     #[allow(unsafe_code)]
-    fn GetMPMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
+    fn GetViewModelMatrixOnPlane(&self, _cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetMPMatrix(sender));
+        self.send_command(WebGLCommand::GetViewModelMatrixOnPlane(sender, index));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();

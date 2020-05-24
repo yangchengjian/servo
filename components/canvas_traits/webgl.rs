@@ -261,6 +261,7 @@ impl<T> Deref for TruncatedDebug<T> {
 #[derive(Clone, Deserialize, Serialize)]
 pub enum WebARCommand {
     OnDisplayChanged(i32, i32, i32),
+    OnTouched(WebGLSender<i32>, i32, i32),
     OnDraw,
 }
 
@@ -268,15 +269,13 @@ pub enum WebARCommand {
 #[derive(Debug, Deserialize, Serialize)]
 pub enum WebGLCommand {
     OnDisplayChanged(i32, i32, i32),
+    OnTouched(WebGLSender<i32>, i32, i32),
     DrawBackground,
-    ProjectViewMatrix(i32),
-    ProjectMatrix(i32),
-    ViewMatrix(i32),
     GetProjectMatrix(WebGLSender<Vec<f32>>),
     GetViewMatrix(WebGLSender<Vec<f32>>),
-    GetModelMatrix(WebGLSender<Vec<f32>>),
-    GetMVMatrix(WebGLSender<Vec<f32>>),
-    GetMPMatrix(WebGLSender<Vec<f32>>),
+    GetModelMatrixOnPlane(WebGLSender<Vec<f32>>, i32),
+    GetModelMatrixOnImage(WebGLSender<Vec<f32>>, i32),
+    GetViewModelMatrixOnPlane(WebGLSender<Vec<f32>>, i32),
 
     GetContextAttributes(WebGLSender<GLContextAttributes>),
     ActiveTexture(u32),
