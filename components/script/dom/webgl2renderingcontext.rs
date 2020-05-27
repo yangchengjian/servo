@@ -3975,18 +3975,13 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
     }
 
     #[allow(unsafe_code)]
-    fn GetModelMatrixOnPlane(&self, cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
-        self.base.GetModelMatrixOnPlane(cx, index)
+    fn GetModelMatrix(&self, cx: crate::script_runtime::JSContext, track_type: i32, index: i32) -> NonNull<JSObject> {
+        self.base.GetModelMatrix(cx, track_type, index)
     }
 
     #[allow(unsafe_code)]
-    fn GetModelMatrixOnImage(&self, cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
-        self.base.GetModelMatrixOnImage(cx, index)
-    }
-
-    #[allow(unsafe_code)]
-    fn GetViewModelMatrixOnPlane(&self, cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
-        self.base.GetViewModelMatrixOnPlane(cx, index)
+    fn GetViewModelMatrix(&self, cx: crate::script_runtime::JSContext, track_type: i32, index: i32) -> NonNull<JSObject> {
+        self.base.GetViewModelMatrix(cx, track_type, index)
     }
 }
 

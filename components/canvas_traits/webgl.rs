@@ -273,9 +273,8 @@ pub enum WebGLCommand {
     DrawBackground,
     GetProjectMatrix(WebGLSender<Vec<f32>>),
     GetViewMatrix(WebGLSender<Vec<f32>>),
-    GetModelMatrixOnPlane(WebGLSender<Vec<f32>>, i32),
-    GetModelMatrixOnImage(WebGLSender<Vec<f32>>, i32),
-    GetViewModelMatrixOnPlane(WebGLSender<Vec<f32>>, i32),
+    GetModelMatrix(WebGLSender<Vec<f32>>, i32, i32),
+    GetViewModelMatrix(WebGLSender<Vec<f32>>, i32, i32),
 
     GetContextAttributes(WebGLSender<GLContextAttributes>),
     ActiveTexture(u32),

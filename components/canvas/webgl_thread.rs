@@ -348,28 +348,20 @@ impl WebGLThread {
                         vector.extend_from_slice(&arcore.get_view_matrix());
                         result_sender.send(vector).unwrap();
                     }
-                    WebGLCommand::GetModelMatrixOnPlane(result_sender, index) => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetModelMatrixOnPlane");
+                    WebGLCommand::GetModelMatrix(result_sender, track_type, index) => {
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetModelMatrix");
 
                         let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
                         let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&mut arcore.get_model_mat_on_plane_by_index(*index));
+                        vector.extend_from_slice(&mut arcore.get_mode_matrix(*track_type, *index));
                         result_sender.send(vector).unwrap();
                     }
-                    WebGLCommand::GetModelMatrixOnImage(result_sender, index) => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetModelMatrixOnImage");
+                    WebGLCommand::GetViewModelMatrix(result_sender, track_type, index) => {
+                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetViewModelMatrix");
 
                         let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
                         let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&mut arcore.get_model_mat_on_image_by_index(*index));
-                        result_sender.send(vector).unwrap();
-                    }
-                    WebGLCommand::GetViewModelMatrixOnPlane(result_sender, index) => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetModelMatrixOnPlane");
-
-                        let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
-                        let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&mut arcore.get_view_model_mat_on_plane_by_index(*index));
+                        vector.extend_from_slice(&mut arcore.get_view_mode_matrix(*track_type, *index));
                         result_sender.send(vector).unwrap();
                     }
                     _ => {}
@@ -1133,9 +1125,8 @@ impl WebGLImpl {
             WebGLCommand::DrawBackground => (),
             WebGLCommand::GetProjectMatrix(_) => (),
             WebGLCommand::GetViewMatrix(_) => (),
-            WebGLCommand::GetModelMatrixOnPlane(_, _) => (),
-            WebGLCommand::GetModelMatrixOnImage(_, _) => (),
-            WebGLCommand::GetViewModelMatrixOnPlane(_, _) => (),
+            WebGLCommand::GetModelMatrix(_, _, _) => (),
+            WebGLCommand::GetViewModelMatrix(_, _, _) => (),
 
             WebGLCommand::GetContextAttributes(ref sender) => sender.send(*attributes).unwrap(),
             WebGLCommand::ActiveTexture(target) => gl.active_texture(target),

@@ -4502,10 +4502,10 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     }
 
     #[allow(unsafe_code)]
-    fn GetModelMatrixOnPlane(&self, _cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
+    fn GetModelMatrix(&self, _cx: crate::script_runtime::JSContext, track_type: i32, index: i32) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetModelMatrixOnPlane(sender, index));
+        self.send_command(WebGLCommand::GetModelMatrix(sender, track_type, index));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();
@@ -4516,24 +4516,10 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     }
 
     #[allow(unsafe_code)]
-    fn GetModelMatrixOnImage(&self, _cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
+    fn GetViewModelMatrix(&self, _cx: crate::script_runtime::JSContext, track_type: i32, index: i32) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetModelMatrixOnImage(sender, index));
-
-        let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
-        let result = receiver.recv().unwrap();
-
-        let cx = self.global().get_cx();
-        create_typed_array(cx, &result, &proj);
-        unsafe { NonNull::new_unchecked(proj.get()) }
-    }
-
-    #[allow(unsafe_code)]
-    fn GetViewModelMatrixOnPlane(&self, _cx: crate::script_runtime::JSContext, index: i32) -> NonNull<JSObject> {
-
-        let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetViewModelMatrixOnPlane(sender, index));
+        self.send_command(WebGLCommand::GetViewModelMatrix(sender, track_type, index));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();

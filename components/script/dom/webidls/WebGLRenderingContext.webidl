@@ -699,9 +699,8 @@ interface mixin WebGLRenderingContextBase
                 void drawBackground();
                 Float32Array getProjectMatrix();
                 Float32Array getViewMatrix();
-                Float32Array getModelMatrixOnPlane(GLint index);
-                Float32Array getModelMatrixOnImage(GLint index);
-                Float32Array getViewModelMatrixOnPlane(GLint index);
+                Float32Array getModelMatrix(GLint track_type, GLint index);
+                Float32Array getViewModelMatrix(GLint track_type, GLint index);
 
         //*************************************************************
 };
