@@ -316,6 +316,7 @@ impl WebGLThread {
                 self.resize_webgl_context(ctx_id, size, sender);
             }
             WebGLMsg::RemoveContext(ctx_id) => {
+                &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore.on_finish();
                 self.remove_webgl_context(ctx_id);
             }
             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
@@ -323,6 +324,10 @@ impl WebGLThread {
                     WebGLCommand::OnDisplayChanged(display_rotation, width, height) => {
                         ::arcore_rs::log::d(&format!("webgl_thread::WebGLCommand::OnDisplayChanged display_rotation = {}, width = {}, height = {}", &display_rotation, &width, &height));
                         self.handle_webar_command(ctx_id, WebARCommand::OnDisplayChanged(*display_rotation, *width, *height));
+                    }
+                    WebGLCommand::OnConfigChanged(show_plane, show_point, show_image, show_face) => {
+                        ::arcore_rs::log::d(&format!("webgl_thread::WebGLCommand::OnConfigChanged show_plane = {}, show_point = {}, show_image = {}, show_face = {}", &show_plane, &show_point, &show_image, &show_face));
+                        self.handle_webar_command(ctx_id, WebARCommand::OnConfigChanged(*show_plane, *show_point, *show_image, *show_face));
                     }
                     WebGLCommand::OnTouched(result_sender, x, y) => {
                         ::arcore_rs::log::d(&format!("webgl_thread::WebGLCommand::OnTouched x = {}, y = {}", &x, &y));
@@ -459,6 +464,9 @@ impl WebGLThread {
         match command {
             WebARCommand::OnDisplayChanged(display_rotation, width, height) => {
                 arcore.on_display_changed(&*data.gl, display_rotation, width, height);
+            }
+            WebARCommand::OnConfigChanged(show_plane, show_point, show_image, show_faces) => {
+                arcore.on_config_changed(show_plane, show_point, show_image, show_faces);
             }
             WebARCommand::OnTouched(result_sender, x, y) => {
                 let index = arcore.on_touched(x as f32, y as f32);
@@ -1120,7 +1128,9 @@ impl WebGLImpl {
         debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
 
         match command {
+            // arcore
             WebGLCommand::OnDisplayChanged(_, _, _) => (),
+            WebGLCommand::OnConfigChanged(_, _, _, _) => (),
             WebGLCommand::OnTouched(_, _, _) => (),
             WebGLCommand::DrawBackground => (),
             WebGLCommand::GetProjectMatrix(_) => (),

@@ -261,6 +261,7 @@ impl<T> Deref for TruncatedDebug<T> {
 #[derive(Clone, Deserialize, Serialize)]
 pub enum WebARCommand {
     OnDisplayChanged(i32, i32, i32),
+    OnConfigChanged(bool, bool, bool, bool),
     OnTouched(WebGLSender<i32>, i32, i32),
     OnDraw,
 }
@@ -269,6 +270,7 @@ pub enum WebARCommand {
 #[derive(Debug, Deserialize, Serialize)]
 pub enum WebGLCommand {
     OnDisplayChanged(i32, i32, i32),
+    OnConfigChanged(bool, bool, bool, bool),
     OnTouched(WebGLSender<i32>, i32, i32),
     DrawBackground,
     GetProjectMatrix(WebGLSender<Vec<f32>>),

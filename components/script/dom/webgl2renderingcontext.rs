@@ -3956,6 +3956,10 @@ impl WebGL2RenderingContextMethods for WebGL2RenderingContext {
         self.base.OnDisplayChanged(display_rotation, width, height);
     }
 
+    fn OnConfigChanged(&self, show_plane: bool, show_point: bool, show_image: bool, show_faces: bool) {
+        self.base.OnConfigChanged(show_plane, show_point, show_image, show_faces);
+    }
+
     fn OnTouched(&self, x: i32, y: i32) -> i32 {
         self.base.OnTouched(x, y)
     }

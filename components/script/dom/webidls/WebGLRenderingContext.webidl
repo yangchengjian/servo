@@ -695,6 +695,7 @@ interface mixin WebGLRenderingContextBase
 
         //*********************   AR    ******************************
                 void onDisplayChanged(GLint display_rotation, GLint width, GLint height);
+                void onConfigChanged(GLboolean show_plane, GLboolean show_point, GLboolean show_image, GLboolean show_faces);
                 GLint onTouched(GLint x, GLint y);
                 void drawBackground();
                 Float32Array getProjectMatrix();

@@ -4463,6 +4463,10 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
         self.send_command(WebGLCommand::OnDisplayChanged(display_rotation, width, height));
     }
 
+    fn OnConfigChanged(&self, show_plane: bool, show_point: bool, show_image: bool, show_faces: bool) {
+        self.send_command(WebGLCommand::OnConfigChanged(show_plane, show_point, show_image, show_faces));
+    }
+
     fn OnTouched(&self, x: i32, y: i32) -> i32 {
         let (sender, receiver) = webgl_channel().unwrap();
         self.send_command(WebGLCommand::OnTouched(sender, x, y));
