@@ -70,6 +70,8 @@ pub enum WebGLMsg {
     ResizeContext(WebGLContextId, Size2D<u32>, WebGLSender<Result<(), String>>),
     /// Drops a WebGLContext.
     RemoveContext(WebGLContextId),
+
+    WebARCommand(WebGLContextId, WebARCommand),
     /// Runs a WebGLCommand in a specific WebGLContext.
     WebGLCommand(WebGLContextId, WebGLCommand, WebGLCommandBacktrace),
     /// Runs a WebVRCommand in a specific WebGLContext.
@@ -160,6 +162,13 @@ impl WebGLMsgSender {
     pub fn send(&self, command: WebGLCommand, backtrace: WebGLCommandBacktrace) -> WebGLSendResult {
         self.sender
             .send(WebGLMsg::WebGLCommand(self.ctx_id, command, backtrace))
+    }
+
+    /// Send a WebARCommand message
+    #[inline]
+    pub fn send_ar(&self, command: WebARCommand) -> WebGLSendResult {
+        self.sender
+            .send(WebGLMsg::WebARCommand(self.ctx_id, command))
     }
 
     /// Send a WebVRCommand message
@@ -258,17 +267,8 @@ impl<T> Deref for TruncatedDebug<T> {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub enum WebARCommand {
-    OnDisplayChanged(i32, i32, i32),
-    OnConfigChanged(bool, bool, bool, bool),
-    OnTouched(WebGLSender<i32>, i32, i32),
-    OnDraw,
-}
-
-/// WebGL Commands for a specific WebGLContext
 #[derive(Debug, Deserialize, Serialize)]
-pub enum WebGLCommand {
+pub enum WebARCommand {
     OnDisplayChanged(i32, i32, i32),
     OnConfigChanged(bool, bool, bool, bool),
     OnTouched(WebGLSender<i32>, i32, i32),
@@ -277,7 +277,11 @@ pub enum WebGLCommand {
     GetViewMatrix(WebGLSender<Vec<f32>>),
     GetModelMatrix(WebGLSender<Vec<f32>>, i32, i32),
     GetViewModelMatrix(WebGLSender<Vec<f32>>, i32, i32),
+}
 
+/// WebGL Commands for a specific WebGLContext
+#[derive(Debug, Deserialize, Serialize)]
+pub enum WebGLCommand {
     GetContextAttributes(WebGLSender<GLContextAttributes>),
     ActiveTexture(u32),
     BlendColor(f32, f32, f32, f32),

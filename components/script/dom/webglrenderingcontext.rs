@@ -86,6 +86,8 @@ use std::rc::Rc;
 use webxr_api::SessionId;
 use webxr_api::SwapChainId as WebXRSwapChainId;
 
+use canvas_traits::webgl::WebARCommand;
+
 // From the GLES 2.0.25 spec, page 85:
 //
 //     "If a texture that is currently bound to one of the targets
@@ -391,6 +393,11 @@ impl WebGLRenderingContext {
 
     pub fn swap_buffers(&self, id: Option<WebGLOpaqueFramebufferId>) {
         let _ = self.webgl_sender.send_swap_buffers(id);
+    }
+
+    #[inline]
+    pub fn send_ar_command(&self, command: WebARCommand) {
+        self.webgl_sender.send_ar(command).unwrap();
     }
 
     #[inline]
@@ -4460,28 +4467,28 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
 
 
     fn OnDisplayChanged(&self, display_rotation: i32, width: i32, height: i32) {
-        self.send_command(WebGLCommand::OnDisplayChanged(display_rotation, width, height));
+        self.send_ar_command(WebARCommand::OnDisplayChanged(display_rotation, width, height));
     }
 
     fn OnConfigChanged(&self, show_plane: bool, show_point: bool, show_image: bool, show_faces: bool) {
-        self.send_command(WebGLCommand::OnConfigChanged(show_plane, show_point, show_image, show_faces));
+        self.send_ar_command(WebARCommand::OnConfigChanged(show_plane, show_point, show_image, show_faces));
     }
 
     fn OnTouched(&self, x: i32, y: i32) -> i32 {
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::OnTouched(sender, x, y));
+        self.send_ar_command(WebARCommand::OnTouched(sender, x, y));
         receiver.recv().unwrap()
     }
 
     fn DrawBackground(&self) {
-        self.send_command(WebGLCommand::DrawBackground);
+        self.send_ar_command(WebARCommand::DrawBackground);
     }
 
     #[allow(unsafe_code)]
     fn GetProjectMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetProjectMatrix(sender));
+        self.send_ar_command(WebARCommand::GetProjectMatrix(sender));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();
@@ -4495,7 +4502,7 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     fn GetViewMatrix(&self, _cx: crate::script_runtime::JSContext) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetViewMatrix(sender));
+        self.send_ar_command(WebARCommand::GetViewMatrix(sender));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();
@@ -4509,7 +4516,7 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     fn GetModelMatrix(&self, _cx: crate::script_runtime::JSContext, track_type: i32, index: i32) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetModelMatrix(sender, track_type, index));
+        self.send_ar_command(WebARCommand::GetModelMatrix(sender, track_type, index));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();
@@ -4523,7 +4530,7 @@ impl WebGLRenderingContextMethods for WebGLRenderingContext {
     fn GetViewModelMatrix(&self, _cx: crate::script_runtime::JSContext, track_type: i32, index: i32) -> NonNull<JSObject> {
 
         let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::GetViewModelMatrix(sender, track_type, index));
+        self.send_ar_command(WebARCommand::GetViewModelMatrix(sender, track_type, index));
 
         let proj: ::js::jsapi::Heap<*mut JSObject> = ::js::jsapi::Heap::default();
         let result = receiver.recv().unwrap();
@@ -4793,6 +4800,10 @@ impl WebGLMessageSender {
 
     pub fn send(&self, msg: WebGLCommand, backtrace: WebGLCommandBacktrace) -> WebGLSendResult {
         self.wake_after_send(|| self.sender.send(msg, backtrace))
+    }
+
+    pub fn send_ar(&self, command: WebARCommand) -> WebGLSendResult {
+        self.wake_after_send(|| self.sender.send_ar(command))
     }
 
     pub fn send_vr(&self, command: WebVRCommand) -> WebGLSendResult {

@@ -319,58 +319,10 @@ impl WebGLThread {
                 &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore.on_finish();
                 self.remove_webgl_context(ctx_id);
             }
+            WebGLMsg::WebARCommand(ctx_id, command) => {
+                self.handle_webar_command(ctx_id, command);
+            }
             WebGLMsg::WebGLCommand(ctx_id, command, backtrace) => {
-                match &command {
-                    WebGLCommand::OnDisplayChanged(display_rotation, width, height) => {
-                        ::arcore_rs::log::d(&format!("webgl_thread::WebGLCommand::OnDisplayChanged display_rotation = {}, width = {}, height = {}", &display_rotation, &width, &height));
-                        self.handle_webar_command(ctx_id, WebARCommand::OnDisplayChanged(*display_rotation, *width, *height));
-                    }
-                    WebGLCommand::OnConfigChanged(show_plane, show_point, show_image, show_face) => {
-                        ::arcore_rs::log::d(&format!("webgl_thread::WebGLCommand::OnConfigChanged show_plane = {}, show_point = {}, show_image = {}, show_face = {}", &show_plane, &show_point, &show_image, &show_face));
-                        self.handle_webar_command(ctx_id, WebARCommand::OnConfigChanged(*show_plane, *show_point, *show_image, *show_face));
-                    }
-                    WebGLCommand::OnTouched(result_sender, x, y) => {
-                        ::arcore_rs::log::d(&format!("webgl_thread::WebGLCommand::OnTouched x = {}, y = {}", &x, &y));
-                        self.handle_webar_command(ctx_id, WebARCommand::OnTouched(result_sender.clone(), *x, *y));
-                    }
-                    WebGLCommand::DrawBackground => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::DrawBackground");
-                        self.handle_webar_command(ctx_id, WebARCommand::OnDraw);
-                    }
-                    WebGLCommand::GetProjectMatrix(result_sender) => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetProjectMatrix");
-
-                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
-                        let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&arcore.get_proj_matrix());
-                        result_sender.send(vector).unwrap();
-                    }
-                    WebGLCommand::GetViewMatrix(result_sender) => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetViewMatrix");
-
-                        let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
-                        let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&arcore.get_view_matrix());
-                        result_sender.send(vector).unwrap();
-                    }
-                    WebGLCommand::GetModelMatrix(result_sender, track_type, index) => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetModelMatrix");
-
-                        let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
-                        let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&mut arcore.get_mode_matrix(*track_type, *index));
-                        result_sender.send(vector).unwrap();
-                    }
-                    WebGLCommand::GetViewModelMatrix(result_sender, track_type, index) => {
-                        ::arcore_rs::log::d("webgl_thread::WebGLCommand::GetViewModelMatrix");
-
-                        let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
-                        let mut vector = Vec::with_capacity(16);
-                        vector.extend_from_slice(&mut arcore.get_view_mode_matrix(*track_type, *index));
-                        result_sender.send(vector).unwrap();
-                    }
-                    _ => {}
-                }
                 self.handle_webgl_command(ctx_id, command, backtrace);
             }
             WebGLMsg::WebVRCommand(ctx_id, command) => {
@@ -461,19 +413,55 @@ impl WebGLThread {
 
         let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
 
-        match command {
+        match &command {
             WebARCommand::OnDisplayChanged(display_rotation, width, height) => {
-                arcore.on_display_changed(&*data.gl, display_rotation, width, height);
+                ::arcore_rs::log::d(&format!("webgl_thread::WebARCommand::OnDisplayChanged display_rotation = {}, width = {}, height = {}", &display_rotation, &width, &height));
+                arcore.on_display_changed(&*data.gl, *display_rotation, *width, *height);
             }
-            WebARCommand::OnConfigChanged(show_plane, show_point, show_image, show_faces) => {
-                arcore.on_config_changed(show_plane, show_point, show_image, show_faces);
+            WebARCommand::OnConfigChanged(show_plane, show_point, show_image, show_face) => {
+                ::arcore_rs::log::d(&format!("webgl_thread::WebARCommand::OnConfigChanged show_plane = {}, show_point = {}, show_image = {}, show_face = {}", &show_plane, &show_point, &show_image, &show_face));
+                arcore.on_config_changed(*show_plane, *show_point, *show_image, *show_face);
             }
             WebARCommand::OnTouched(result_sender, x, y) => {
-                let index = arcore.on_touched(x as f32, y as f32);
+                ::arcore_rs::log::d(&format!("webgl_thread::WebARCommand::OnTouched x = {}, y = {}", &x, &y));
+                let index = arcore.on_touched(*x as f32, *y as f32);
                 result_sender.send(index).unwrap();
             }
-            WebARCommand::OnDraw => {
+            WebARCommand::DrawBackground => {
+                ::arcore_rs::log::d("webgl_thread::WebARCommand::DrawBackground");
                 arcore.on_draw(&*data.gl);
+            }
+            WebARCommand::GetProjectMatrix(result_sender) => {
+                ::arcore_rs::log::d("webgl_thread::WebARCommand::GetProjectMatrix");
+
+                let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                let mut vector = Vec::with_capacity(16);
+                vector.extend_from_slice(&arcore.get_proj_matrix());
+                result_sender.send(vector).unwrap();
+            }
+            WebARCommand::GetViewMatrix(result_sender) => {
+                ::arcore_rs::log::d("webgl_thread::WebARCommand::GetViewMatrix");
+
+                let arcore = &self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                let mut vector = Vec::with_capacity(16);
+                vector.extend_from_slice(&arcore.get_view_matrix());
+                result_sender.send(vector).unwrap();
+            }
+            WebARCommand::GetModelMatrix(result_sender, track_type, index) => {
+                ::arcore_rs::log::d("webgl_thread::WebARCommand::GetModelMatrix");
+
+                let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                let mut vector = Vec::with_capacity(16);
+                vector.extend_from_slice(&mut arcore.get_mode_matrix(*track_type, *index));
+                result_sender.send(vector).unwrap();
+            }
+            WebARCommand::GetViewModelMatrix(result_sender, track_type, index) => {
+                ::arcore_rs::log::d("webgl_thread::WebARCommand::GetViewModelMatrix");
+
+                let arcore = &mut self.cached_context_info.get_mut(&ctx_id).unwrap().arcore;
+                let mut vector = Vec::with_capacity(16);
+                vector.extend_from_slice(&mut arcore.get_view_mode_matrix(*track_type, *index));
+                result_sender.send(vector).unwrap();
             }
         }
     }
@@ -1128,16 +1116,6 @@ impl WebGLImpl {
         debug_assert_eq!(gl.get_error(), gl::NO_ERROR);
 
         match command {
-            // arcore
-            WebGLCommand::OnDisplayChanged(_, _, _) => (),
-            WebGLCommand::OnConfigChanged(_, _, _, _) => (),
-            WebGLCommand::OnTouched(_, _, _) => (),
-            WebGLCommand::DrawBackground => (),
-            WebGLCommand::GetProjectMatrix(_) => (),
-            WebGLCommand::GetViewMatrix(_) => (),
-            WebGLCommand::GetModelMatrix(_, _, _) => (),
-            WebGLCommand::GetViewModelMatrix(_, _, _) => (),
-
             WebGLCommand::GetContextAttributes(ref sender) => sender.send(*attributes).unwrap(),
             WebGLCommand::ActiveTexture(target) => gl.active_texture(target),
             WebGLCommand::AttachShader(program_id, shader_id) => {
